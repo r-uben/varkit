@@ -1,0 +1,16 @@
+# Start of Selection
+VAR-Toolbox/
+macroeconomics_data/
+replication_packages/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.log
+*.sqlite3
+
+# End of Selection
+*.ipynb

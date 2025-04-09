@@ -1,0 +1,52 @@
+# Macroeconomic Dataset Metadata
+
+All dates in the dataset are set to the last day of each month.
+
+## FRED Series
+
+### FEDFUNDS: Federal Funds Effective Rate
+- Units: Percent
+- Original Frequency: Monthly
+- Observation range: 1954-07-31T00:00:00 to 2025-03-31T00:00:00
+- Notes: Daily Federal Funds Rate from 1928-1954 (https://fred.stlouisfed.org/categories/33951).  The federal funds rate is the interest rate at which depository institutions trade federal funds (balances held...
+
+### DGS1: Market Yield on U.S. Treasury Securities at 1-Year Constant Maturity, Quoted on an Investment Basis
+- Units: Percent
+- Original Frequency: Daily
+- Observation range: 1962-01-02T00:00:00 to 2025-04-04T00:00:00
+- Notes: H.15 Statistical Release notes (https://www.federalreserve.gov/releases/h15/default.htm) and the Treasury Yield Curve Methodology (https://home.treasury.gov/policy-issues/financing-the-government/inte...
+
+### INDPRO: Industrial Production: Total Index
+- Units: Index 2017=100
+- Original Frequency: Monthly
+- Observation range: 1919-01-31T00:00:00 to 2025-02-28T00:00:00
+- Notes: explanatory notes (https://www.federalreserve.gov/releases/g17/About.htm) issued by the Board of Governors. For recent updates, see the  announcements (https://www.federalreserve.gov/feeds/g17.html) i...
+
+### CPILFESL: Consumer Price Index for All Urban Consumers: All Items Less Food and Energy in U.S. City Average
+- Units: Index 1982-1984=100
+- Original Frequency: Monthly
+- Observation range: 1957-01-31T00:00:00 to 2025-02-28T00:00:00
+- Notes: The "Consumer Price Index for All Urban Consumers: All Items Less Food & Energy" is an aggregate of prices paid by urban consumers for a typical basket of goods, excluding food and energy. This measur...
+
+### CPIAUCSL: Consumer Price Index for All Urban Consumers: All Items in U.S. City Average
+- Units: Index 1982-1984=100
+- Original Frequency: Monthly
+- Observation range: 1947-01-31T00:00:00 to 2025-02-28T00:00:00
+- Notes: The Consumer Price Index for All Urban Consumers: All Items (CPIAUCSL) is a price index of a basket of goods and services paid by urban consumers. Percent changes in the price index measure the inflat...
+
+### GDPC1: Real Gross Domestic Product
+- Units: Billions of Chained 2017 Dollars
+- Original Frequency: Quarterly
+- Observation range: 1947-03-31T00:00:00 to 2024-12-31T00:00:00
+- Notes: BEA Account Code: A191RX  Real gross domestic product is the inflation adjusted value of the goods and services produced by labor and property located in the United States.For more information see the...
+
+## Excess Bond Premium (EBP)
+
+- Source: data/raw/ebp_csv.csv
+- Variables: gz_spread, ebp, est_prob
+
+## Commodity Price Index
+
+- Source: data/raw/commodity_price_index.csv
+- Variables: commodity_price, Change
+

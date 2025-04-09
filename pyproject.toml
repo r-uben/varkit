@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "varkit"
+version = "0.1.0"
+description = "A Python implementation of VAR-Toolbox for vector autoregression analysis"
+authors = ["Rubén Fernández Fuertes <fernandezfuertesruben@gmail.com>"]
+readme = "README.md"
+packages = [
+    {include = "varkit", from = "src"},
+    {include = "mains"}
+]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+numpy = "^1.26.0"
+scipy = "^1.12.0"
+pandas = "^2.2.0"
+matplotlib = "^3.8.0"
+plotly = "^5.18.0"
+statsmodels = "^0.14.1"
+openpyxl = "^3.1.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+black = "^24.0.0"
+isort = "^5.13.0"
+mypy = "^1.8.0"
+pytest-cov = "^4.1.0"
+
+[tool.poetry.scripts]
+gk2015 = "mains.gk2015_replication:main"
+llm_surprises = "mains.llm_surprises_responses:main"
+build_macro_dataset = "mains.build_macro_dataset:main"
