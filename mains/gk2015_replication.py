@@ -153,7 +153,6 @@ def main():
     
     # Compute IRFs and confidence bands with Cholesky
     IR, var_results = var_ir(var.results, var_options)
-    breakpoint()
     INF, SUP, MED, BAR = var_irband(var_results, var_options)
     breakpoint()
     # IV IDENTIFICATION
