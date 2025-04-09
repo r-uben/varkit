@@ -32,36 +32,39 @@ class VAROptions:
     sr_mod: int = 1  # model uncertainty for sign restrictions
 
 
-def var_make_lags(data: Union[np.ndarray, pd.DataFrame], lag: int) -> np.ndarray:
-    """Create matrix of lagged values, following VARmakelags.m.
-    
-    Args:
-        data: Matrix containing the original data (nobs x nvar)
-        lag: Lag order
-    
-    Returns:
-        Matrix of lagged values
-    """
-    # Convert DataFrame to numpy array if needed
-    if isinstance(data, pd.DataFrame):
-        data = data.values
-    
-    nobs = len(data)
-    
-    # Create the lagged matrix
-    out = np.array([])
-    for jj in range(lag):
-        if out.size == 0:
-            out = data[jj:nobs-lag+jj]
-        else:
-            out = np.hstack([data[jj:nobs-lag+jj], out])
-    
-    return out
+class VARUtils:
+    @staticmethod
+    def var_make_lags(data: Union[np.ndarray, pd.DataFrame], lag: int) -> np.ndarray:
+        """Create matrix of lagged values, following VARmakelags.m.
+            
+        Args:
+            data: Matrix containing the original data (nobs x nvar)
+            lag: Lag order
+        
+        Returns:
+            Matrix of lagged values
+        """
+        # Convert DataFrame to numpy array if needed
+        if isinstance(data, pd.DataFrame):
+            data = data.values
+        
+        nobs = len(data)
+        
+        # Create the lagged matrix
+        out = np.array([])
+        for jj in range(lag):
+            if out.size == 0:
+                out = data[jj:nobs-lag+jj]
+            else:
+                out = np.hstack([data[jj:nobs-lag+jj], out])
+        
+        return out
 
 
-def var_make_xy(data: Union[np.ndarray, pd.DataFrame], lags: int, const: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Create matrices Y and X for VAR estimation, following VARmakexy.m.
-    
+    @staticmethod
+    def var_make_xy(data: Union[np.ndarray, pd.DataFrame], lags: int, const: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Create matrices Y and X for VAR estimation, following VARmakexy.m.
+        
     Args:
         data: Matrix containing the original data (nobs x nvar)
         lags: Lag order of the VAR
@@ -76,36 +79,36 @@ def var_make_xy(data: Union[np.ndarray, pd.DataFrame], lags: int, const: int) ->
             - Y: VAR dependent variable
             - X: VAR independent variable
     """
-    # Convert DataFrame to numpy array if needed
-    if isinstance(data, pd.DataFrame):
-        data = data.values
-    
-    nobs = len(data)
-    
-    # Y matrix
-    Y = data[lags:]
-    
-    # X-matrix
-    X = np.array([])
-    for jj in range(lags):
-        if X.size == 0:
-            X = data[jj:nobs-lags+jj]
-        else:
-            X = np.hstack([data[jj:nobs-lags+jj], X])
-    
-    # Add deterministic terms
-    if const == 0:
-        pass  # No constant, no trend
-    elif const == 1:  # constant
-        X = np.hstack([np.ones((nobs-lags, 1)), X])
-    elif const == 2:  # time trend and constant
-        trend = np.arange(1, nobs-lags+1).reshape(-1, 1)
-        X = np.hstack([np.ones((nobs-lags, 1)), trend, X])
-    elif const == 3:  # linear time trend, squared time trend, and constant
-        trend = np.arange(1, nobs-lags+1).reshape(-1, 1)
-        X = np.hstack([np.ones((nobs-lags, 1)), trend, trend**2, X])
-    
-    return Y, X
+        # Convert DataFrame to numpy array if needed
+        if isinstance(data, pd.DataFrame):
+            data = data.values
+        
+        nobs = len(data)
+        
+        # Y matrix
+        Y = data[lags:]
+        
+        # X-matrix
+        X = np.array([])
+        for jj in range(lags):
+            if X.size == 0:
+                X = data[jj:nobs-lags+jj]
+            else:
+                X = np.hstack([data[jj:nobs-lags+jj], X])
+        
+        # Add deterministic terms
+        if const == 0:
+            pass  # No constant, no trend
+        elif const == 1:  # constant
+            X = np.hstack([np.ones((nobs-lags, 1)), X])
+        elif const == 2:  # time trend and constant
+            trend = np.arange(1, nobs-lags+1).reshape(-1, 1)
+            X = np.hstack([np.ones((nobs-lags, 1)), trend, X])
+        elif const == 3:  # linear time trend, squared time trend, and constant
+            trend = np.arange(1, nobs-lags+1).reshape(-1, 1)
+            X = np.hstack([np.ones((nobs-lags, 1)), trend, trend**2, X])
+        
+        return Y, X
 
 
 class VARModel:
@@ -183,13 +186,15 @@ class VARModel:
                 raise ValueError('Endogenous and exogenous variables must have same number of observations')
     
     def _estimate(self):
-        """Estimate VAR model using OLS."""
+        """Estimate VAR model using statsmodels."""
+        from statsmodels.tsa.api import VAR
+        
         # Create Y and X matrices for endogenous variables
-        Y, X = var_make_xy(self.endo, self.nlag, self.const)
+        Y, X = VARUtils.var_make_xy(self.endo, self.nlag, self.const)
         
         # Add exogenous variables if present
         if self.exog is not None and self.nvar_ex > 0:
-            X_EX = var_make_lags(self.exog, self.nlag_ex)
+            X_EX = VARUtils.var_make_lags(self.exog, self.nlag_ex)
             
             # Align matrices based on lag lengths
             if self.nlag == self.nlag_ex:
@@ -233,29 +238,36 @@ class VARModel:
         self.results['Y'] = Y
         self.results['X'] = X
         
-        # Estimate equation by equation
+        # Fit VAR model using statsmodels
+        model = VAR(self.endo)
+        
+        # Set up deterministic terms
+        if self.const == 0:
+            trend_order = -1  # No deterministic terms
+        elif self.const == 1:
+            trend_order = 'c'  # Constant only
+        elif self.const == 2:
+            trend_order = 'ct'  # Constant and trend
+        else:  # const == 3
+            trend_order = 'ctt'  # Constant and quadratic trend
+        
+        # Fit the model
+        results = model.fit(maxlags=self.nlag, trend=trend_order)
+        
+        # Store results equation by equation to maintain interface
         for j in range(self.nvar):
-            y_vec = Y.iloc[:, j]
+            # Extract results for this equation
+            beta = results.params[j]
+            stderr = results.stderr[j]
+            tstat = results.tvalues[j]
+            pval = results.pvalues[j]
+            resid = results.resid[:, j]
+            yhat = results.fittedvalues[:, j]
+            y_vec = self.endo.iloc[self.nlag:, j]
             
-            # OLS estimation
-            beta = np.linalg.solve(X.T @ X, X.T @ y_vec)
-            yhat = X @ beta
-            resid = y_vec - yhat
-            
-            # Compute statistics
-            nobs = len(y_vec)
-            k = X.shape[1]
-            sigma2 = (resid.T @ resid) / (nobs - k)
-            var_beta = sigma2 * np.linalg.inv(X.T @ X)
-            
-            # t-statistics and p-values
-            stderr = np.sqrt(np.diag(var_beta))
-            tstat = beta / stderr
-            pval = 2 * (1 - stats.t.cdf(np.abs(tstat), nobs - k))
-            
-            # R-squared
-            r2 = 1 - (resid.T @ resid) / ((y_vec - y_vec.mean()).T @ (y_vec - y_vec.mean()))
-            r2_adj = 1 - (1 - r2) * (nobs - 1) / (nobs - k)
+            # Compute R-squared statistics
+            r2 = results.fpe[j]  # Final prediction error is equivalent to R-squared
+            r2_adj = 1 - (1 - r2) * (len(y_vec) - 1) / (len(y_vec) - len(beta))
             
             # Store results for this equation
             eq_name = f'eq{j+1}'
@@ -264,16 +276,20 @@ class VARModel:
                 'stderr': stderr,
                 'tstat': tstat,
                 'pval': pval,
-                'resid': resid.values,  # Store as numpy array
-                'yhat': yhat.values,    # Store as numpy array
-                'y': y_vec.values,      # Store as numpy array
+                'resid': resid,
+                'yhat': yhat,
+                'y': y_vec.values,
                 'r2': r2,
                 'r2_adj': r2_adj,
-                'sigma2': sigma2
+                'sigma2': results.sigma_u[j, j]
             }
         
-        # Compute coefficient matrices
-        self._compute_coefficient_matrices()
+        # Store coefficient matrices
+        self.results['Ft'] = results.params.T
+        self.results['F'] = results.params
+        self.results['sigma'] = results.sigma_u
+        self.results['Fcomp'] = results.companion_matrix()
+        self.results['maxEig'] = np.max(np.abs(np.linalg.eigvals(results.companion_matrix())))
         
         # Initialize other results
         self.results.update({
@@ -282,39 +298,4 @@ class VARModel:
             'PSI': None,    # Wold multipliers
             'Fp': None,     # Recursive F by lag
             'IV': None      # External instruments for identification
-        })
-    
-    def _compute_coefficient_matrices(self):
-        """Compute coefficient matrices and VCV."""
-        # Get dimensions
-        k = self.results['X'].shape[1]
-        
-        # Get X and Y matrices
-        X = self.results['X'].values
-        Y = self.results['Y'].values
-        
-        # Compute Ft directly like in MATLAB: Ft = (X'*X)\(X'*Y)
-        Ft = np.linalg.solve(X.T @ X, X.T @ Y)
-        
-        # Store coefficient matrices
-        self.results['Ft'] = Ft
-        self.results['F'] = Ft.T
-        
-        # Compute residuals
-        resid = Y - X @ Ft
-        
-        # Store residuals
-        self.results['resid'] = resid
-        
-        # Compute and store VCV matrix
-        sigma = (resid.T @ resid) / (self.nobse - self.ntotcoeff)
-        self.results['sigma'] = sigma
-        
-        # Compute companion matrix
-        Fcomp = np.zeros((self.nvar * self.nlag, self.nvar * self.nlag))
-        Fcomp[:self.nvar, :self.nvar*self.nlag] = self.results['F'][:, self.const:self.const+self.nvar*self.nlag]
-        Fcomp[self.nvar:, :-self.nvar] = np.eye(self.nvar * (self.nlag - 1))
-        self.results['Fcomp'] = Fcomp
-        
-        # Compute maximum eigenvalue
-        self.results['maxEig'] = np.max(np.abs(np.linalg.eigvals(Fcomp))) 
+        }) 
