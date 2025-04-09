@@ -6,18 +6,18 @@ supporting both standard and wild bootstrap methods.
 """
 
 import numpy as np
-from typing import Dict, Tuple
-from .var_model import VARModel
-from .var_ir import var_ir
+from typing import Dict, Tuple, Union
 import pandas as pd
 from tqdm.auto import tqdm
+from .var_model import VARModel, VARResults
+from .var_ir import var_ir
 
 
-def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def var_irband(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Calculate confidence intervals for impulse response functions.
     
     Args:
-        var_results: Dictionary with VAR estimation results
+        var_results: VARResults object with estimation results
         var_options: Dictionary with VAR options
     
     Returns:
@@ -28,7 +28,7 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
             - BAR: Mean response (nsteps, nvar, nvar)
     """
     # Check inputs
-    if not var_results:
+    if var_results is None:
         raise ValueError('You need to provide VAR results')
     if not var_options:
         raise ValueError('You need to provide VAR options')
@@ -39,25 +39,25 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
     pctg = var_options['pctg']
     method = var_options['method']
     
-    Ft = var_results['Ft']  # this is \Phi' in the notes (rows are coeffs, columns are eqs)
-    nvar = var_results['nvar']
-    nvar_ex = var_results.get('nvar_ex', 0)
-    nlag = var_results['nlag']
-    nlag_ex = var_results.get('nlag_ex', 0)
-    const = var_results['const']
-    nobs = var_results['nobs']
-    resid = var_results['resid']
+    # Convert Ft to numpy array if it's a pandas DataFrame
+    Ft = var_results.Ft.values if isinstance(var_results.Ft, pd.DataFrame) else var_results.Ft
+    nvar = var_results.nvar
+    nvar_ex = var_results.nvar_ex
+    nlag = var_results.nlag
+    nlag_ex = var_results.nlag_ex
+    const = var_results.const
+    nobs = var_results.nobs
+    resid = var_results.var_results.resid  # Get residuals from statsmodels results
     
-    # Convert ENDO and EXOG to numpy arrays if they're DataFrames
-    ENDO = var_results['ENDO'].values if isinstance(var_results['ENDO'], pd.DataFrame) else var_results['ENDO']
-    EXOG = var_results.get('EXOG')
-    if EXOG is not None and isinstance(EXOG, pd.DataFrame):
-        EXOG = EXOG.values
-    IV = var_results.get('IV')
+    # Get the data from VARResults
+    ENDO = var_results.ENDO
+    EXOG = var_results.EXOG
+    IV = var_results.IV
     
-    # Store column names for later
-    endo_cols = var_results['ENDO'].columns if isinstance(var_results['ENDO'], pd.DataFrame) else None
-    exog_cols = var_results.get('EXOG').columns if isinstance(var_results.get('EXOG'), pd.DataFrame) else None
+    # Get column names from original data
+    sm_var_results = var_results.var_results
+    endo_cols = sm_var_results.names if hasattr(sm_var_results, 'names') else None
+    exog_cols = None  # We'll handle this based on whether EXOG is a DataFrame
     
     # Create the matrices for the loop
     y_artificial = np.zeros((nobs + nlag, nvar))
@@ -83,7 +83,7 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
         elif method == 'wild':
             # Wild bootstrap: multiply residuals by random +1/-1 
             # This preserves both contemporaneous and conditional heteroskedasticity
-            if var_options.get('ident') == 'iv':
+            if var_options.get('ident') == 'iv' and IV is not None:
                 # For IV, we need to bootstrap both residuals and instrument
                 # Use Rademacher distribution (random +1/-1) multiplier for each observation
                 rr = 1 - 2 * (np.random.rand(nobs, IV.shape[1]) > 0.5)  # Create random +1/-1 matrix
@@ -126,6 +126,7 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
                     LAGplus = np.hstack([LAGplus, EXOG[jj-nlag]])
             
             # Generate values for time=jj for all variables using VAR equations
+            breakpoint()
             for mm in range(nvar):
                 y_artificial[jj, mm] = LAGplus @ Ft[:, mm] + u[jj-nlag, mm]
             
@@ -136,10 +137,22 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
         # STEP 3: Estimate VAR on artificial bootstrapped data
         try:
             # Convert y_artificial to DataFrame with proper column names
-            y_artificial_df = pd.DataFrame(y_artificial, columns=endo_cols)
+            if endo_cols is not None:
+                y_artificial_df = pd.DataFrame(y_artificial, columns=endo_cols)
+            else:
+                # Create default column names if none available
+                y_artificial_df = pd.DataFrame(y_artificial, columns=[f'var{i+1}' for i in range(nvar)])
             
-            # Convert EXOG back to DataFrame if needed
-            exog_df = pd.DataFrame(EXOG, columns=exog_cols) if EXOG is not None and exog_cols is not None else None
+            # Handle exogenous variables for bootstrapped VAR
+            exog_df = None
+            if EXOG is not None:
+                if isinstance(EXOG, pd.DataFrame):
+                    # If EXOG is a DataFrame, use its column names
+                    exog_df = pd.DataFrame(EXOG, columns=EXOG.columns)
+                else:
+                    # Create default column names if none available
+                    exog_cols = [f'exog{i+1}' for i in range(EXOG.shape[1])]
+                    exog_df = pd.DataFrame(EXOG, columns=exog_cols)
             
             # Estimate VAR on bootstrapped data
             var_model = VARModel(
@@ -151,19 +164,19 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
             )
             
             # For IV, use bootstrapped instrument
-            if 'z' in locals():
-                var_model.results['IV'] = z
+            if 'z' in locals() and z is not None:
+                var_model.results.IV = z
             
             # STEP 4: Calculate impulse responses from bootstrapped VAR
             IR_draw, var_draw = var_ir(var_model.results, var_options)
             
             # Only accept stable VARs (eigenvalues less than 1)
-            if var_draw['maxEig'] < 0.9999:
+            if var_draw.maxEig < 0.9999:
                 IR[:, :, :, tt] = IR_draw
                 tt += 1
                 pbar.update(1) # Update progress bar only on accepted draw
         except np.linalg.LinAlgError as e:
-            # print(f"Warning: Draw {attempts} failed (LinAlgError: {e}). Skipping.")
+            # Skip silently to avoid flooding console
             continue
         except Exception as e:
             print(f"\nError during bootstrap draw {attempts}: {e}. Skipping.")

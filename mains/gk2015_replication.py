@@ -118,6 +118,7 @@ def main():
     
     # VAR specification
     var_names = ['gs1', 'logcpi', 'logip', 'ebp']  # Order matters for Cholesky
+    shock_var = 'gs1'
     iv_names = ['ss']
     var_nlags = 12  # Monthly data, 1 year of lags
     var_const = 1   # Include constant term
@@ -131,8 +132,8 @@ def main():
     
     # Estimate VAR
     print("\nEstimating VAR model...")
-    breakpoint()
-    var_model = VARModel(
+
+    var = VARModel(
         endo=data.endo,
         nlag=var_nlags,
         const=var_const
@@ -146,23 +147,25 @@ def main():
         'nsteps': 48,      # 48 months
         'ndraws': 200,     # 200 bootstrap replications
         'pctg': 95,        # 95% confidence bands
-        'mult': 10         # Print progress every 10 draws
+        'mult': 10,         # Print progress every 10 draws
+        'shock_var': shock_var
     }
     
     # Compute IRFs and confidence bands with Cholesky
-    IR, var_results = var_ir(var_model.results, var_options)
+    IR, var_results = var_ir(var.results, var_options)
+    breakpoint()
     INF, SUP, MED, BAR = var_irband(var_results, var_options)
-
+    breakpoint()
     # IV IDENTIFICATION
     print("\nEstimating IV IRFs and error bands...")
     var_options['ident'] = 'iv'
     var_options['method'] = 'wild'
     
     # Add IV data to VAR results
-    var_model.results['IV'] = data.iv.values
+    var.results['IV'] = data.iv.values
 
     # Compute IRFs and confidence bands with IV identification
-    IRiv, var_results_iv = var_ir(var_model.results, var_options)
+    IRiv, var_results_iv = var_ir(var.results, var_options)
     INFiv, SUPiv, MEDiv, BARiv = var_irband(var_results_iv, var_options)
     
     # Create figure with both Cholesky and IV

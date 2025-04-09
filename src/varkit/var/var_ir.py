@@ -8,17 +8,59 @@ This module implements impulse response functions with four identification schem
 - external instruments ('iv')
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 import numpy as np
+import pandas as pd
+from statsmodels.tsa.vector_ar.var_model import VARResults
+from .var_model import VARResults
 from ..auxiliary import ols
 from ..utils import common_sample
+from ..utils.var import VARUtils
 
 
-def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
+def get_wold_representation(var_results: VARResults, nsteps: int, recurs: str = 'wold') -> Tuple[pd.DataFrame, Dict[int, pd.DataFrame]]:
+    """Compute Wold representation matrices for a VAR model.
+    
+    Args:
+        var_results: VARResults object with estimation results
+        nsteps: Number of steps for computation
+        recurs: Method for recursive computation ('wold' or other)
+    
+    Returns:
+        tuple:
+            - PSI: DataFrame with Wold multipliers
+            - Fp: Dictionary of lag coefficient matrices
+    """
+    # Get statsmodels VARResults object and variable names
+    sm_var_results = var_results.varfit
+    nvar = var_results.nvar
+    
+    if recurs == 'wold':
+        # Get coefficients from statsmodels params DataFrame
+        params = sm_var_results.params
+        
+        # Get lag coefficient matrices
+        Fp = VARUtils.get_lag_coefs_matrices(params)
+          
+        # Compute Wold representation matrices
+        PSI = VARUtils.compute_wold_matrices(Fp, nsteps)
+    else:
+        # If not precomputing Wold, at least initialize PSI as DataFrame
+        PSI = pd.DataFrame(
+            np.zeros((nvar, nvar, nsteps)),
+            index=pd.Index(sm_var_results.model.endog_names, name='shock_variable'),
+            columns=pd.Index(sm_var_results.model.endog_names, name='response_variable')
+        )
+        PSI.iloc[:, :, 0] = np.eye(nvar)
+        Fp = None  # No need to compute Fp if not using Wold
+        
+    return PSI, Fp
+
+def var_ir(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, VARResults]:
     """Compute impulse responses (IRs) for a VAR model.
     
     Args:
-        var_results: Dictionary with VAR estimation results
+        var_results: VARResults object with estimation results
         var_options: Dictionary with VAR options
     
     Returns:
@@ -27,63 +69,53 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
             - var_results: Updated VAR results with additional fields
     """
     # Check inputs
-    if not var_results:
+    if var_results is None:
         raise ValueError('You need to provide VAR results')
-    iv = var_results.get('IV')
+    
+    iv = var_results.IV
     if var_options['ident'] == 'iv' and iv is None:
         raise ValueError('You need to provide the data for the instrument in VAR (IV)')
     
+
+    shock_var = var_options['shock_var']
+
     # Retrieve and initialize variables
     nsteps = var_options['nsteps']
     impact = var_options.get('impact', 0)  # Default to 0 (one stdev shock)
-    shut = var_options.get('shut', 0)  # Default to 0 (no shut)
     recurs = var_options.get('recurs', 'wold')  # Default to 'wold'
-    Fcomp = var_results['Fcomp']
-    nvar = var_results['nvar']
-    nlag = var_results['nlag']
-    sigma = var_results['sigma']
-    IR = np.full((nsteps, nvar, nvar), np.nan)
+    Fcomp = var_results.Fcomp
+    nvar = var_results.nvar
+    nlag = var_results.nlag
+    sigma = var_results.sigma
+
+    # Get statsmodels VARResults object
+    sm_var_results: VARResults = var_results.varfit
     
-    # Compute Wold representation
-    PSI = np.zeros((nvar, nvar, nsteps))
-    # Re-write F matrix to compute multipliers
-    var_results['Fp'] = np.zeros((nvar, nvar, nlag))
-    i = var_results['const']
-    for ii in range(nlag):
-        var_results['Fp'][:, :, ii] = var_results['F'][:, i:i+nvar]
-        i += nvar
+    # Get variable names from statsmodels results
+    var_names = sm_var_results.model.endog_names
+    IR = pd.DataFrame(index=range(nsteps), columns=var_names)  # Initialize DataFrame for IRFs
     
-    # Compute multipliers
-    PSI[:, :, 0] = np.eye(nvar)
-    for ii in range(1, nsteps):
-        aux = np.zeros((nvar, nvar))
-        for jj in range(min(ii, nlag)):  # Only use up to nlag lags
-            aux += PSI[:, :, ii-jj-1] @ var_results['Fp'][:, :, jj]
-        PSI[:, :, ii] = aux
-    
-    # Update VAR with Wold multipliers
-    var_results['PSI'] = PSI
+    # Get Wold representation and compute multipliers if needed
+    if var_results.PSI is None:
+        PSI, Fp = get_wold_representation(var_results, nsteps, recurs)
+        var_results.PSI = PSI
+        var_results.Fp = Fp
+    else:
+        # Use precomputed PSI if available
+        PSI = var_results.PSI
+        Fp = var_results.Fp
     
     # Identification: Recover B matrix
     if var_options['ident'] == 'short':
-        # B matrix is recovered with Cholesky decomposition
-        try:
-            B = np.linalg.cholesky(sigma).T
-        except np.linalg.LinAlgError:
-            raise ValueError('VCV is not positive definite')
-    
+        B = VARUtils.get_cholesky_identification_short(sigma)
     elif var_options['ident'] == 'long':
         # B matrix is recovered with Cholesky on cumulative IR to infinity
-        Finf_big = np.linalg.inv(np.eye(len(Fcomp)) - Fcomp)
-        Finf = Finf_big[:nvar, :nvar]
-        D = np.linalg.cholesky(Finf @ sigma @ Finf.T).T
-        B = np.linalg.solve(Finf, D)
-    
+        B = VARUtils.get_cholesky_identification_long(sigma, Fcomp)
     elif var_options['ident'] == 'sign':
         # B matrix is recovered with sign restrictions
-        if 'B' not in var_results or var_results['B'] is None:
+        if var_results.B is None:
             raise ValueError('You need to provide the B matrix with sign restrictions')
-        B = var_results['B']
+        B = var_results.B
     
     elif var_options['ident'] == 'iv':
         # B matrix is recovered with external instrument IV
@@ -91,8 +123,10 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
         
         # Step 1: Recover residuals (first variable is the one to be instrumented - order matters!)
         # In GK (2015), the first variable is the 1-year bond rate
-        up = var_results['resid'][:, 0]     # residuals to be instrumented (1st variable)
-        uq = var_results['resid'][:, 1:]    # residuals for second stage (other variables)
+        resid = sm_var_results.resid  # Get residuals from statsmodels
+        breakpoint()
+        up = resid[:, 0]     # residuals to be instrumented (1st variable)
+        uq = resid[:, 1:]    # residuals for second stage (other variables)
         
         # Step 2: Prepare instrument data
         # Make sample of IV comparable with up and uq by matching post-lag samples
@@ -124,13 +158,9 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
         # Get fitted values from first stage (predicted p using instrument)
         p_hat = first_stage['yhat']
 
-        # --- Diagnostics block removed ---
+        # Store the first_stage results as it might be useful
+        var_results.FirstStage = first_stage 
         
-        # Store the first_stage results (e.g., coefficients, residuals) as it might be useful
-        # Note: This dictionary will NOT contain F-stats or R-squared anymore.
-        var_results['FirstStage'] = first_stage 
-        # ---------------------------------------------
-
         # Step 4: Second stage regressions to get impact responses
         # Recover first column of B matrix with second stage regressions
         Biv = np.zeros(nvar)
@@ -152,15 +182,9 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
                      Biv[ii] = float(beta1_ss_scalar)
                      sqsp[ii-1] = float(beta1_ss_scalar) # Store the coefficient
                  except (TypeError, ValueError):
-                      print(f"Warning: Could not convert second stage beta {beta1_ss_scalar} to float for var {ii}.")
-                      # Decide how to handle this, e.g., set to NaN or raise error
-                      # Biv[ii] = np.nan 
-                      # sqsp[ii-1] = np.nan 
-                      raise ValueError("Second stage coefficient issue.") # More strict
+                      raise ValueError(f"Could not convert second stage beta {beta1_ss_scalar} to float for var {ii}.")
             else:
-                 # Handle case where beta is not as expected
-                 print(f"Warning: Could not extract second stage beta for var {ii}.")
-                 raise ValueError("Second stage beta extraction issue.") # More strict
+                 raise ValueError(f"Could not extract second stage beta for var {ii}.")
 
         # Step 5: Calculate shock size scaling factor
         # Update size of the shock following function 4 of Gertler and Karadi (2015)
@@ -169,7 +193,7 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
         # Calculate the variance-covariance matrix of residuals
         pq_mean = np.mean(pq, axis=0)
         pq_demeaned = pq - np.tile(pq_mean, (len(pq), 1))  # Center the data
-        sigma_b = (1/(len(pq)-var_results['ntotcoeff'])) * (pq_demeaned.T @ pq_demeaned)
+        sigma_b = (1/(len(pq)-var_results.ntotcoeff)) * (pq_demeaned.T @ pq_demeaned)
         
         # Extract components following MATLAB notation for clarity
         # s21s11 is the vector of second stage coefficients (impact responses)
@@ -193,10 +217,9 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
         B = np.zeros((nvar, nvar))
         B[:, 0] = Biv  # First column is the identified shock
         
-        # Update VAR with IV results for potential further analysis
-        var_results['FirstStage'] = first_stage
-        var_results['sigma_b'] = sigma_b
-        var_results['Biv'] = Biv
+        # Store IV-specific results
+        var_results.sigma_b = sigma_b
+        var_results.Biv = Biv
     else:
         raise ValueError(
             'Identification incorrectly specified.\n'
@@ -238,45 +261,30 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
         # Set other shocks to NaN since they're not identified
         IR[:, :, 1:] = np.nan
     else:
-        # For Cholesky, compute all IRFs but we'll only use responses to first shock
-        for mm in range(nvar):
-            # Set to zero a row of the companion matrix if "shut" is selected
-            if shut != 0:
-                Fcomp[shut-1, :] = 0
+        # For other identification methods, compute all IRFs
+        for shock_var in var_names:
+            # Initialize response matrix for all steps at once
+            response = np.zeros((nsteps, nvar))
             
-            # Initialize the impulse response vector
-            response = np.zeros((nvar, nsteps))
+            # Get impulse vector and compute initial response
+            impulse = VARUtils.get_unitary_shock(B, impact, shock_var)
+            response[0] = (B @ impulse).values.flatten()
             
-            # Create the impulse vector
-            impulse = np.zeros(nvar)
-            
-            # Set the size of the shock
-            if impact == 0:
-                impulse[mm] = 1  # one stdev shock
-            elif impact == 1:
-                impulse[mm] = 1/B[mm, mm]  # unitary shock
-            else:
-                raise ValueError('Impact must be either 0 or 1')
-            
-            # First period impulse response (=impulse vector)
-            response[:, 0] = B @ impulse  # Response of all variables to shock mm
-            
-            # Shut down the response if "shut" is selected
-            if shut != 0:
-                response[shut-1, 0] = 0
-            
-            # Recursive computation of impulse response
+            # Compute remaining steps based on recursion method
             if recurs == 'wold':
-                for kk in range(1, nsteps):
-                    response[:, kk] = PSI[:, :, kk] @ B @ impulse
-            elif recurs == 'comp':
-                for kk in range(1, nsteps):
-                    Fcomp_n = np.linalg.matrix_power(Fcomp, kk)
-                    response[:, kk] = Fcomp_n[:nvar, :nvar] @ B @ impulse
+                # Vectorized computation using Wold representation
+                for step in range(1, nsteps):
+                    Psi = PSI.loc[PSI['step'] == step, var_names]
+                    Psi.index = var_names
+                    response[step] = (Psi @ B @ impulse).values.flatten()
+            else:  # recurs == 'comp'
+                # Vectorized computation using companion form
+                for step in range(1, nsteps):
+                    response[step] = (np.linalg.matrix_power(Fcomp[:nvar, :nvar], step) @ B @ impulse).flatten()
             
-            IR[:, :, mm] = response.T  # Store responses of all variables to shock mm
-    
+            IR[shock_var] = response
+ 
     # Update VAR with structural impact matrix
-    var_results['B'] = B
-    
+    var_results.B = B
+  
     return IR, var_results 
