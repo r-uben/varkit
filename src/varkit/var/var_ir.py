@@ -93,7 +93,7 @@ def var_ir(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, VARR
     
     # Get variable names from statsmodels results
     var_names = sm_var_results.model.endog_names
-    IR = pd.DataFrame(index=range(nsteps), columns=var_names)  # Initialize DataFrame for IRFs
+    IR = {}  # Initialize dictionary for IRFs
     
     # Get Wold representation and compute multipliers if needed
     if var_results.PSI is None:
@@ -231,6 +231,9 @@ def var_ir(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, VARR
             '- iv:  external instrument'
         )
     
+    # Update VAR with structural impact matrix
+    var_results.B = B
+    
     # Compute the impulse response
     if var_options['ident'] == 'iv':
         # For IV, only compute IRF to the identified monetary policy shock (first shock)
@@ -262,14 +265,13 @@ def var_ir(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, VARR
         # Set other shocks to NaN since they're not identified
         IR[:, :, 1:] = np.nan
     else:
-        # For other identification methods, compute all IRFs
-        for shock_var in var_names:
+        # For other identification methods, compute all IRFs. But we will only use the IRF to the shock_var
+        for var in var_names:
             # Initialize response matrix for all steps at once
-            response = np.zeros((nsteps, nvar))
-            
+            response = pd.DataFrame(np.zeros((nsteps, nvar)), columns=var_names)
             # Get impulse vector and compute initial response
-            impulse = VARUtils.get_unitary_shock(B, impact, shock_var)
-            response[0] = (B @ impulse).values.flatten()
+            impulse = VARUtils.get_unitary_shock(B, impact, var)
+            response.loc[0, :] = (B @ impulse).values.flatten()
             
             # Compute remaining steps based on recursion method
             if recurs == 'wold':
@@ -277,15 +279,13 @@ def var_ir(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, VARR
                 for step in range(1, nsteps):
                     Psi = PSI.loc[PSI['step'] == step, var_names]
                     Psi.index = var_names
-                    response[step] = (Psi @ B @ impulse).values.flatten()
+                    response.loc[step, :] = (Psi @ B @ impulse).values.flatten()
             else:  # recurs == 'comp'
                 # Vectorized computation using companion form
                 for step in range(1, nsteps):
-                    response[step] = (np.linalg.matrix_power(Fcomp[:nvar, :nvar], step) @ B @ impulse).flatten()
+                    response.loc[step, :] = (np.linalg.matrix_power(Fcomp[:nvar, :nvar], step) @ B @ impulse).flatten()
             
-            IR[shock_var] = response
- 
-    # Update VAR with structural impact matrix
-    var_results.B = B
-  
+            IR[var] = response
+    breakpoint()
+
     return IR, var_results 
