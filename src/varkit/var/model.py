@@ -15,7 +15,7 @@ from typing import Optional, Dict, List, Tuple, Union, Any
 from varkit.utils.var import VARUtils
 
 @dataclass
-class VAROptions:
+class Options:
     """Class to hold VAR model options."""
     vnames: List[str] = field(default_factory=list)  # endogenous variables names
     vnames_ex: List[str] = field(default_factory=list)  # exogenous variables names
@@ -36,12 +36,11 @@ class VAROptions:
 
 
 
-
 @dataclass
-class VARResults:
+class Output:
     """Class to hold VAR estimation results."""
-    ENDO: np.ndarray
-    EXOG: Optional[np.ndarray]
+    endo: pd.DataFrame
+    exog: Optional[pd.DataFrame]
     nvar: int
     nvar_ex: int
     nlag: int
@@ -53,12 +52,13 @@ class VARResults:
     ntotcoeff: int
     Y: pd.DataFrame
     X: pd.DataFrame
-    varfit: Any  # statsmodels VAR results
+    fit: Any  # statsmodels VAR results
     Ft: np.ndarray
     F: np.ndarray
     sigma: np.ndarray
     Fcomp: np.ndarray
     maxEig: float
+    var_names: List[str]
     B: Optional[np.ndarray] = None      # structural impact matrix
     Biv: Optional[np.ndarray] = None    # first columns of structural impact matrix
     PSI: Optional[np.ndarray] = None    # Wold multipliers
@@ -66,7 +66,7 @@ class VARResults:
     IV: Optional[np.ndarray] = None     # External instruments for identification
 
 
-class VARModel:
+class Model:
     """Vector Autoregression (VAR) Model.
     
     This class implements VAR estimation with OLS, following Gertler and Karadi (2015).
@@ -91,10 +91,10 @@ class VARModel:
             exog: Optional DataFrame of exogenous variables (nobs x nvar_ex)
             nlag_ex: Number of lags for exogenous variables
         """
+
         self._initialize_attributes(endo, nlag, const, exog, nlag_ex)
-        self._validate_inputs()
-        self.options = VAROptions()
-        self._estimate()
+        self.options = Options()
+        self.__results = None
     
     def _initialize_attributes(self, endo: pd.DataFrame, nlag: int, 
                              const: int, exog: Optional[pd.DataFrame], nlag_ex: int) -> None:
@@ -112,39 +112,49 @@ class VARModel:
         self.ncoeff = self.nvar * self.nlag
         self.ncoeff_ex = self.nvar_ex * (self.nlag_ex + 1)
         self.ntotcoeff = self.ncoeff + self.ncoeff_ex + self.const
+
+        self.__results = None
     
     def _validate_inputs(self) -> None:
         """Validate input data."""
         if self.exog is not None and len(self.exog) != len(self.endo):
             raise ValueError('Endogenous and exogenous variables must have same number of observations')
     
-    def _estimate(self) -> None:
+    @property
+    def results(self) -> Output:
+        """Get the model."""
+        if self.__results is None:
+            self._validate_inputs()
+            self._estimate_model()
+        return self.__results
+
+    def _estimate_model(self) -> None:
         """Estimate VAR model using statsmodels."""
         # Fit VAR model
         model = VAR(self.endo)
         trend_order = VARUtils.get_trend_order(self.const)
-        varfit = model.fit(maxlags=self.nlag, trend=trend_order)
+        fit = model.fit(maxlags=self.nlag, trend=trend_order)
         
         # Prepare data matrices
         Y = pd.DataFrame(
-            varfit.endog[self.nlag:],
+            fit.endog[self.nlag:],
             index=self.endo.index[self.nlag:],
             columns=self.endo.columns
         )
         X = pd.DataFrame(
-            varfit.exog,
+            fit.exog,
             index=self.endo.index[self.nlag:],
-            columns=varfit.exog_names
+            columns=fit.exog_names
         )
         
         # Get coefficients and compute companion matrix
-        var_coefs = varfit.params.values
+        var_coefs = fit.params.values
         Fcomp = VARUtils.compute_companion_matrix(var_coefs, self.nvar, self.nlag)
         
         # Store results
-        self.results = VARResults(
-            ENDO=self.endo.values,
-            EXOG=self.exog.values if self.exog is not None else None,
+        self.__results = Output(
+            endo=self.endo,
+            exog=self.exog if self.exog is not None else None,
             nvar=self.nvar,
             nvar_ex=self.nvar_ex,
             nlag=self.nlag,
@@ -156,10 +166,11 @@ class VARModel:
             ntotcoeff=self.ntotcoeff,
             Y=Y,
             X=X,
-            varfit=varfit,
-            Ft=varfit.params.T,
-            F=varfit.params,
-            sigma=varfit.sigma_u,
+            fit=fit,
+            Ft=fit.params.T,
+            F=fit.params,
+            sigma=fit.sigma_u,
             Fcomp=Fcomp,
-            maxEig=np.max(np.abs(np.linalg.eigvals(Fcomp)))
+            maxEig=np.max(np.abs(np.linalg.eigvals(Fcomp))),
+            var_names=fit.model.endog_names
         )

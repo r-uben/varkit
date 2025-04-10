@@ -19,8 +19,8 @@ import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
-from varkit.var.var_model import VARModel
-from varkit.var.var_ir import var_ir
+from varkit.var.model import VARModel
+from varkit.var.impulse_response import var_ir
 from varkit.var.var_irband import var_irband
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm

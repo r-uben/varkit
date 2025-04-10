@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 
+
 def common_sample(*args: Union[np.ndarray, pd.DataFrame]) -> tuple:
     """Extract common sample from multiple arrays/DataFrames.
     

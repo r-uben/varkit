@@ -78,15 +78,39 @@ class VARUtils:
 
     @staticmethod
     def get_lag_coefs_matrices(params):
+        """Extract lag coefficient matrices from the VAR parameter DataFrame.
+        
+        This function takes the estimated VAR parameters and organizes them into separate
+        coefficient matrices for each lag. The resulting matrices have the following properties:
+        - Each Fp[lag] is a DataFrame of shape (nvar × nvar)
+        - Rows represent the response variables (the dependent variables in the VAR equations)
+        - Columns represent the predictor variables (the lagged variables that appear on the right side)
+        - Fp[lag][i,j] represents the effect of variable j lagged by 'lag' periods on variable i
+        
+        Note: The orientation of these matrices is important for correct matrix multiplication
+        in the Wold representation calculation.
+        
+        Args:
+            params: Parameter DataFrame from VAR estimation
+            
+        Returns:
+            Dict[int, pd.DataFrame]: Dictionary mapping lag numbers to coefficient matrices
+        """
         nvar = VARUtils.retrieve_nvar_from_params(params)
         nlag = VARUtils.retrieve_nlag_from_params(params)
-         # Create coefficient matrices organized by lags as DataFrames
+        
+        # Create coefficient matrices organized by lags as DataFrames
         Fp = {}  # Dictionary to store lag DataFrames
         for lag in range(1, nlag + 1):
             # Get coefficients for this lag across all variables
             lag_index = f'L{lag}.' # the dot is important, THINK ABOUT L11
-            lag_coeffs = params.loc[params.index.str.startswith(lag_index)].values  # Select rows where index starts with lag_index
-    
+            # Select rows where index starts with lag_index
+            # Transpose to get right orientation for our matrix multiplications
+            lag_coeffs = params.loc[params.index.str.startswith(lag_index)].values.T
+            
+            # Reshape to nvar x nvar matrix where:
+            # - Rows = response variables (dependent variables in VAR equations)
+            # - Columns = predictor variables (lag variables on right side of equations)
             Fp[lag] = pd.DataFrame(
                 lag_coeffs.reshape(nvar, nvar),
                 index=params.columns,
@@ -98,34 +122,58 @@ class VARUtils:
     def compute_wold_matrices(Fp: Dict[int, pd.DataFrame], nsteps: int) -> pd.DataFrame:
         """Compute Wold moving average representation matrices.
         
+        The Wold representation expresses a VAR model as an infinite MA process:
+        y_t = ε_t + Ψ₁ε_{t-1} + Ψ₂ε_{t-2} + ...
+        
+        This function computes the Ψ (PSI) matrices recursively using the formula:
+        Ψ₀ = I (identity matrix)
+        Ψₛ = ∑ᵢ₌₁ᵖ Ψₛ₋ᵢFᵢ for s > 0, where p is the VAR lag order
+        
+        Matrix orientation:
+        - Each PSI[step] has rows = response variables, columns = shock variables
+        - PSI[step][i,j] represents the effect of a unit shock to variable j 
+          at time t on variable i at time t+step
+        
+        This orientation is specifically designed for computing impulse responses via:
+        IR_step = PSI[step] @ B @ impulse
+        
         Args:
             Fp: Dictionary of lag coefficient matrices from get_lag_coefs_matrices
             nsteps: Number of steps to compute
             
         Returns:
-            pd.DataFrame: MultiIndex DataFrame with all PSI values
+            pd.DataFrame: MultiIndex DataFrame with all PSI values, where:
+                - 'step' index represents the time step
+                - 'response_variable' index represents the variable receiving the shock effect
+                - columns represent the variables from which shocks originate
         """
         nvar = Fp[1].shape[0]  # Number of variables
         var_names = Fp[1].columns  # Extract variable names from the first lag matrix
         nlag = len(Fp)  # Total number of lags present in the Fp dictionary
         
         # Initialize PSI as a list to hold DataFrames for each step
+        # Each PSI[step] will have shape (nvar × nvar) with same orientation as Fp matrices
         PSI = [pd.DataFrame(np.zeros((nvar, nvar)), index=var_names, columns=var_names) for _ in range(nsteps)]
         
-        # The first step is initialized as the identity matrix
+        # The first step is initialized as the identity matrix (Ψ₀ = I)
         PSI[0] = pd.DataFrame(np.eye(nvar), index=var_names, columns=var_names)
         
-        # Compute multipliers for each step from 1 to nsteps-1
+        # Compute multipliers for each step from 1 to nsteps-1 using the recursive formula
+        # Ψₛ = ∑ᵢ₌₁ᵖ Ψₛ₋ᵢFᵢ for s > 0
         for step in range(1, nsteps):
             PSI[step] = sum(
-                PSI[step - lag - 1] @ Fp[lag + 1]
+                PSI[step - lag - 1] @ Fp[lag + 1]  # Matrix multiplication maintains orientation
                 for lag in range(min(step, nlag))
                 )
         
         # Create a MultiIndex DataFrame for easier analysis of PSI values
+        # This reorganizes the PSI matrices while preserving their information
         PSI = pd.DataFrame(
+            # Stack all PSI matrices into a (nsteps*nvar) × nvar array
             np.array([PSI[step].values for step in range(nsteps)]).reshape(nsteps * nvar, nvar),
+            # Columns still represent shock variables (source of shocks)
             columns=pd.Index(var_names, name=''),
+            # Create MultiIndex for rows with (step, response_variable)
             index=pd.MultiIndex.from_product(
                 [range(nsteps), var_names],
                 names=['step', 'response_variable']
@@ -134,6 +182,8 @@ class VARUtils:
         PSI = PSI.reset_index()
         
         # Return the MultiIndex DataFrame with reset index for better usability
+        # When used for impulse responses, we will extract specific steps with:
+        # PSI.loc[PSI['step'] == step, var_names]
         return PSI
 
     @staticmethod
@@ -149,8 +199,8 @@ class VARUtils:
             # Step 2: Compute the Cholesky decomposition
             cholesky_decomp = np.linalg.cholesky(sigma_values)
             
-            # Step 3: Create the DataFrame for B using the transposed Cholesky matrix
-            B = pd.DataFrame(cholesky_decomp.T, index=sigma.index, columns=sigma.columns)
+            # Step 3: Create the DataFrame for B using theCholesky matrix. In this case, we have rows = response variables, columns = shock variables, so we must NOT transpose the cholesky matrix for the first variable to contemporaneously affcet all other variables.
+            B = pd.DataFrame(cholesky_decomp, index=sigma.index, columns=sigma.columns)
         except np.linalg.LinAlgError:
             raise ValueError('VCV is not positive definite')
         return B
@@ -166,7 +216,24 @@ class VARUtils:
     
     @staticmethod
     def get_unitary_shock(B: pd.DataFrame, impact: int, shock_var: str) -> pd.DataFrame:
-
+        """Create an impulse vector for computing impulse responses.
+        
+        This function creates a vector that represents a shock to a specific variable.
+        The shock size is determined by the 'impact' parameter:
+        - impact=0: one standard deviation shock (uses the B matrix directly)
+        - impact=1: unitary shock (scales by 1/B[shock_var,shock_var])
+        
+        The resulting impulse vector is used in impulse response calculations:
+        IR_step = PSI[step] @ B @ impulse
+        
+        Args:
+            B: Structural identification matrix (e.g., Cholesky decomposition of variance-covariance)
+            impact: Type of shock (0=one std dev, 1=unitary)
+            shock_var: Name of the variable to shock
+            
+        Returns:
+            pd.DataFrame: Impulse vector for the specified shock
+        """
         nvar = B.shape[0]
         var_names = B.columns
         

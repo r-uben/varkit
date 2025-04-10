@@ -9,8 +9,8 @@ import numpy as np
 from typing import Dict, Tuple, Union
 import pandas as pd
 from tqdm.auto import tqdm
-from .var_model import VARModel, VARResults
-from .var_ir import var_ir
+from .model import VARModel, VARResults
+from .impulse_response import var_ir
 
 
 def var_irband(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

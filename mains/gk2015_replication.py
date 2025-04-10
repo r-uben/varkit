@@ -13,10 +13,12 @@ import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, List
-from varkit.var.var_model import VARModel
-from varkit.var.var_ir import var_ir
-from varkit.var.var_irband import var_irband
 import matplotlib.pyplot as plt
+
+
+from varkit.var.model import Model
+from varkit.var.options import Options
+from varkit.var.impulse_response import ImpulseResponse
 
 
 def parse_date(date_str: str) -> pd.Timestamp:
@@ -106,26 +108,28 @@ class Data:
         return long_names
 
 
+def get_data(var_names: List[str], iv_names: List[str], shock_var: str):
+# Paths
+    data_path = Path('data/gk2015/GK2015_Data.xlsx')
+    output_path = Path('data/gk2015/figures')
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Load and prepare data
+    print("Loading and preparing data...")
+    data = Data.from_excel(data_path, var_names, iv_names)
+    return data
+
 def main():
     """Main replication script."""
     # Set random seed for reproducibility
     np.random.seed(42)
     
-    # Paths
-    data_path = Path('data/gk2015/GK2015_Data.xlsx')
-    output_path = Path('data/gk2015/figures')
-    output_path.mkdir(parents=True, exist_ok=True)
-    
-    # VAR specification
     var_names = ['gs1', 'logcpi', 'logip', 'ebp']  # Order matters for Cholesky
     shock_var = 'gs1'
     iv_names = ['ss']
     var_nlags = 12  # Monthly data, 1 year of lags
     var_const = 1   # Include constant term
-    
-    # Load and prepare data
-    print("Loading and preparing data...")
-    data = Data.from_excel(data_path, var_names, iv_names)
+    data = get_data(var_names, iv_names, shock_var)
     
     # Get long names for plotting
     var_names_long = data.get_long_names(var_names)
@@ -133,7 +137,7 @@ def main():
     # Estimate VAR
     print("\nEstimating VAR model...")
 
-    var = VARModel(
+    VAR = Model(
         endo=data.endo,
         nlag=var_nlags,
         const=var_const
@@ -141,60 +145,62 @@ def main():
     
     # CHOLESKY IDENTIFICATION
     print("\nEstimating Cholesky IRFs and error bands...")
-    var_options = {
+    options = {
         'ident': 'short',  # Cholesky
         'method': 'wild',  # Wild bootstrap
-        'nsteps': 48,      # 48 months
+        'nsteps': 48,      # 48 months q
         'ndraws': 200,     # 200 bootstrap replications
         'pctg': 95,        # 95% confidence bands
         'mult': 10,         # Print progress every 10 draws
-        'shock_var': shock_var
+        'shock_var': shock_var,
+        'recurs': 'wold'
     }
     
     # Compute IRFs and confidence bands with Cholesky
-    IR, var_results = var_ir(var.results, var_options)
-    breakpoint()
-    INF, SUP, MED, BAR = var_irband(var_results, var_options)
-    breakpoint()
+    impulse_response = ImpulseResponse(VAR.results, options)
+    IR = impulse_response.get_impulse_response()
+    INF, SUP, MED, BAR = impulse_response.get_bands()
     # IV IDENTIFICATION
     print("\nEstimating IV IRFs and error bands...")
-    var_options['ident'] = 'iv'
-    var_options['method'] = 'wild'
+    options['ident'] = 'iv'
+    options['method'] = 'wild'
     
-    # Add IV data to VAR results
-    var.results['IV'] = data.iv.values
-
-    # Compute IRFs and confidence bands with IV identification
-    IRiv, var_results_iv = var_ir(var.results, var_options)
-    breakpoint()
-    INFiv, SUPiv, MEDiv, BARiv = var_irband(var_results_iv, var_options)
-    
+   # # Add IV data to VAR results
+   # VAR.results['IV'] = data.iv.values
+#
+   # # Compute IRFs and confidence bands with IV identification
+   # impulse_response = ImpulseResponse(VAR.results, options)
+   # IRiv = impulse_response.get_impulse_response()
+   # breakpoint()
+   # INFiv, SUPiv, MEDiv, BARiv = impulse_response.get_bands()
+   # 
     # Create figure with both Cholesky and IV
     plt.figure(figsize=(20, 20))
     
     # Plot both identifications
-    for ii in range(data.nvar):
+    for ii, var in enumerate(var_names):
         # Cholesky subplot (left column)
         plt.subplot(4, 2, 2*ii + 1)
-        plt.plot(BAR[:, ii], '-r', linewidth=2, label='Cholesky')
-        plt.plot(INF[:, ii], '--r', linewidth=1)
-        plt.plot(SUP[:, ii], '--r', linewidth=1)
-        plt.plot(np.zeros(var_options['nsteps']), '-k')
+        plt.plot(BAR.loc[:, var], '-r', linewidth=2, label='Cholesky')
+        plt.plot(INF.loc[:, var], '--r', linewidth=1)
+        plt.plot(SUP.loc[:, var], '--r', linewidth=1)
+        plt.plot(np.zeros(options['nsteps']), '-k')
         plt.title(var_names_long[ii], fontweight='bold')
         plt.axis('tight')
         plt.legend()
-        
         # IV subplot (right column)
-        plt.subplot(4, 2, 2*ii + 2)
-        plt.plot(BARiv[:, ii], '-k', linewidth=2, label='IV')
-        plt.plot(INFiv[:, ii], '--k', linewidth=1)
-        plt.plot(SUPiv[:, ii], '--k', linewidth=1)
-        plt.plot(np.zeros(var_options['nsteps']), '-k')
-        plt.title(var_names_long[ii], fontweight='bold')
-        plt.axis('tight')
-        plt.legend()
+        #plt.subplot(4, 2, 2*ii + 2)
+        #plt.plot(BARiv[:, ii], '-k', linewidth=2, label='IV')
+        #plt.plot(INFiv[:, ii], '--k', linewidth=1)
+        #plt.plot(SUPiv[:, ii], '--k', linewidth=1)
+        #plt.plot(np.zeros(options.nsteps), '-k')
+        #plt.title(var_names_long[ii], fontweight='bold')
+        #plt.axis('tight')
+        #plt.legend()
     
     plt.tight_layout()
+    output_path = Path('data/figures')
+    output_path.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path / f'irf_{iv_names[0]}.pdf')
     plt.close()
 
