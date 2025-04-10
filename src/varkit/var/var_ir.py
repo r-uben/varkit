@@ -269,7 +269,6 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
             if recurs == 'wold':
                 for kk in range(1, nsteps):
                     response[:, kk] = PSI[:, :, kk] @ B @ impulse
-                    breakpoint()
             elif recurs == 'comp':
                 for kk in range(1, nsteps):
                     Fcomp_n = np.linalg.matrix_power(Fcomp, kk)

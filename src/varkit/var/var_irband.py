@@ -149,6 +149,7 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
                 exog=exog_df,
                 nlag_ex=nlag_ex
             )
+            breakpoint()
             
             # For IV, use bootstrapped instrument
             if 'z' in locals():
@@ -156,6 +157,7 @@ def var_irband(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, np.nda
             
             # STEP 4: Calculate impulse responses from bootstrapped VAR
             IR_draw, var_draw = var_ir(var_model.results, var_options)
+            breakpoint()
             
             # Only accept stable VARs (eigenvalues less than 1)
             if var_draw['maxEig'] < 0.9999:
