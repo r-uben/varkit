@@ -376,7 +376,7 @@ class ImpulseResponse:
             # Try to infer frequency from the data
             original_freq = pd.infer_freq(self.results.endo.index)
 
-        # Create y_artificial only once with proper frequency
+        # Create y_artificial with proper time index
         y_artificial = pd.DataFrame(
             np.zeros((nobs + nlag, nvar)), 
             columns=self.results.endo.columns, 
@@ -410,42 +410,40 @@ class ImpulseResponse:
 
         while tt < ndraws and attempts < max_attempts:
             attempts += 1
-            # STEP 1: choose the method and generate the bootstrapped residuals
+            # Get bootstrapped residuals
             u, z = self._get_bootstrapped_residuals(IV)
             
-            # STEP 2: Reset values while keeping the index
+            # Reset values while keeping the index
             y_artificial.iloc[:] = 0
-            LAG.iloc[:] = 0
             
-            # Initialize first nlag observations
+            # STEP 2.1: Initialize first nlag observations with real data
             for jj in range(nlag):
                 y_artificial.iloc[jj] = self.results.endo.iloc[jj]
-                LAG.iloc[jj] = y_artificial.iloc[jj]
             
-            # Get forecast with proper frequency
-            # We need to pass the initial conditions correctly
-            initial_data = y_artificial.iloc[:nlag].values  # Get the lags as initial conditions
-            y_pred = pd.DataFrame(
-                self.fit.forecast(y=initial_data, steps=nobs),  # Pass initial conditions correctly
-                columns=self.results.endo.columns,
-                index=pd.date_range(
-                    start=self.results.endo.index[nlag],
-                    periods=nobs,
-                    freq=original_freq
-                )
-            )
+            # Get the coefficient matrices
+            F = self.fit.params
             
-            y_artificial.iloc[nlag:] = y_pred + u[:(nobs)]  # Make sure u matches the size
+            # STEP 2.2: Generate artificial series by iterating VAR equations
+            for jj in range(nlag, nobs + nlag):
+                # Get the lag values in correct order using DataFrame operations
+                lag_data = y_artificial.iloc[jj-nlag:jj]
+                # Reverse the order of lags and flatten maintaining correct structure
+                X = lag_data.iloc[::-1].values.flatten()  # This reverses the order to match [t-1, t-2, ...]
+                
+                # Construct LAGplus using the dedicated method
+                X = self._construct_lag_with_const_or_trend(X, const, jj, nlag)
+                
+                # Generate values for time=jj for all variables
+                y_artificial.iloc[jj, :] =  F.T @ X + u.iloc[jj-nlag, :]
             
             # STEP 3: Estimate VAR on artificial bootstrapped data
             try:
-
                 var_model = Model(
                     endo=y_artificial,
                     nlag=nlag,
                     const=const
                 )
-                breakpoint()
+                
                 # For IV, use bootstrapped instrument
                 if 'z' in locals() and z is not None:
                     var_model.results.IV = z
@@ -460,7 +458,6 @@ class ImpulseResponse:
                 if maxEig < 0.9999:
                     impulse_response = ImpulseResponse(var_model.results, ir_options)
                     IR_draw = impulse_response.get_impulse_response()
-                    breakpoint()
                     IR[tt] = IR_draw[shock_var]
                 
                 tt += 1
@@ -517,3 +514,30 @@ class ImpulseResponse:
             BAR[var] = all_draws.mean(axis=1)
 
         return INF, SUP, MED, BAR
+
+    def _construct_lag_with_const_or_trend(self, X: np.ndarray, const: int, jj: int, nlag: int) -> np.ndarray:
+        """Construct LAGplus based on deterministic terms.
+
+        Args:
+            LAG: Array containing the lag values.
+            const: Integer indicating the type of deterministic terms to include:
+                  0: No constant
+                  1: Constant
+                  2: Constant and linear trend
+                  3: Constant, linear trend and quadratic trend
+            jj: Current time index
+            nlag: Number of lags in the VAR model
+
+        Returns:
+            np.ndarray: LAGplus array with deterministic terms prepended to LAG values
+        """
+        if const == 0:
+            return X.copy()
+        elif const == 1:
+            return np.hstack([1, X])
+        elif const == 2:
+            return np.hstack([1, jj-nlag+1, X])
+        elif const == 3:
+            return np.hstack([1, jj-nlag+1, (jj-nlag+1)**2, X])
+        else:
+            raise ValueError(f"Invalid const value: {const}. Must be 0, 1, 2, or 3.")
