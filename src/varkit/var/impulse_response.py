@@ -294,16 +294,17 @@ class ImpulseResponse:
                 # Compute remaining steps based on recursion method
                 if recurs == 'wold':
                     # Vectorized computation using Wold representation
-                    for step in range(1, nsteps):
+                    for step in range(nsteps):
                         take_step = self.PSI.step == step
                         Psi = self.PSI.loc[take_step, self.results.var_names]
                         Psi.index = self.results.var_names
                         response.loc[step, :] = (Psi @ self.B @ impulse).values.flatten()
+                    
                 else:  # recurs == 'comp'
                     # Vectorized computation using companion form
                     for step in range(1, nsteps):
                         response.loc[step, :] = (np.linalg.matrix_power(Fcomp[:nvar, :nvar], step) @ self.B @ impulse).flatten()
-                
+
                 IR[var] = response
     
         return IR
@@ -396,7 +397,7 @@ class ImpulseResponse:
             ),
             columns=self.results.endo.columns
         )
-        
+
         # Initialize storage for IRs (storing draws for all variables' responses to the first shock)
         IR = {}
         
@@ -439,13 +440,12 @@ class ImpulseResponse:
             # STEP 3: Estimate VAR on artificial bootstrapped data
             try:
 
-
                 var_model = Model(
                     endo=y_artificial,
                     nlag=nlag,
                     const=const
                 )
-                
+                breakpoint()
                 # For IV, use bootstrapped instrument
                 if 'z' in locals() and z is not None:
                     var_model.results.IV = z
@@ -460,6 +460,7 @@ class ImpulseResponse:
                 if maxEig < 0.9999:
                     impulse_response = ImpulseResponse(var_model.results, ir_options)
                     IR_draw = impulse_response.get_impulse_response()
+                    breakpoint()
                     IR[tt] = IR_draw[shock_var]
                 
                 tt += 1

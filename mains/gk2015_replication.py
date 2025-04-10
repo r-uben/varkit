@@ -159,6 +159,7 @@ def main():
     # Compute IRFs and confidence bands with Cholesky
     impulse_response = ImpulseResponse(VAR.results, options)
     IR = impulse_response.get_impulse_response()
+    breakpoint()
     INF, SUP, MED, BAR = impulse_response.get_bands()
     # IV IDENTIFICATION
     print("\nEstimating IV IRFs and error bands...")
