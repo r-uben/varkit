@@ -95,7 +95,7 @@ class VARUtils:
         return Fp
 
     @staticmethod
-    def compute_wold_matrices(Fp: Dict[int, pd.DataFrame], nsteps: int) -> Tuple[Dict[int, pd.DataFrame], pd.DataFrame]:
+    def compute_wold_matrices(Fp: Dict[int, pd.DataFrame], nsteps: int) -> pd.DataFrame:
         """Compute Wold moving average representation matrices.
         
         Args:
@@ -103,36 +103,26 @@ class VARUtils:
             nsteps: Number of steps to compute
             
         Returns:
-            Tuple containing:
-                - Dictionary of PSI matrices for each step
-                - MultiIndex DataFrame with all PSI values
+            pd.DataFrame: MultiIndex DataFrame with all PSI values
         """
-        nvar = Fp[1].shape[0]  # Get dimensions from first lag matrix
-        var_names = Fp[1].columns  # Get variable names
-        nlag = len(Fp)  # Number of lags
+        nvar = Fp[1].shape[0]  # Number of variables
+        var_names = Fp[1].columns  # Extract variable names from the first lag matrix
+        nlag = len(Fp)  # Total number of lags present in the Fp dictionary
         
-        # Initialize PSI as dictionary of DataFrames
-        PSI = {}
+        # Initialize PSI as a list to hold DataFrames for each step
+        PSI = [pd.DataFrame(np.zeros((nvar, nvar)), index=var_names, columns=var_names) for _ in range(nsteps)]
         
-        # First step is identity matrix
-        PSI[0] = pd.DataFrame(
-            np.eye(nvar),
-            index=var_names,
-            columns=var_names
-        )
+        # The first step is initialized as the identity matrix
+        PSI[0] = pd.DataFrame(np.eye(nvar), index=var_names, columns=var_names)
         
-        # Compute multipliers
+        # Compute multipliers for each step from 1 to nsteps-1
         for step in range(1, nsteps):
-            aux = pd.DataFrame(
-                np.zeros((nvar, nvar)),
-                index=var_names,
-                columns=var_names
-            )
-            for lag in range(min(step, nlag)):
-                aux += PSI[step-lag-1] @ Fp[lag+1]
-            PSI[step] = aux
+            PSI[step] = sum(
+                PSI[step - lag - 1] @ Fp[lag + 1]
+                for lag in range(min(step, nlag))
+                )
         
-        # Create MultiIndex DataFrame for easier analysis
+        # Create a MultiIndex DataFrame for easier analysis of PSI values
         PSI = pd.DataFrame(
             np.array([PSI[step].values for step in range(nsteps)]).reshape(nsteps * nvar, nvar),
             columns=pd.Index(var_names, name=''),
@@ -141,8 +131,10 @@ class VARUtils:
                 names=['step', 'response_variable']
             )
         )
+        PSI = PSI.reset_index()
         
-        return PSI.reset_index()
+        # Return the MultiIndex DataFrame with reset index for better usability
+        return PSI
 
     @staticmethod
     def get_wold_multipliers(params):

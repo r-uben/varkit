@@ -105,8 +105,7 @@ def var_ir(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, VARR
         PSI = var_results.PSI
         Fp = var_results.Fp
     
-    breakpoint()
-    
+ 
     # Identification: Recover B matrix
     if var_options['ident'] == 'short':
         B = VARUtils.get_cholesky_identification_short(sigma)
