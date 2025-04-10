@@ -131,7 +131,6 @@ def main():
     
     # Estimate VAR
     print("\nEstimating VAR model...")
-    breakpoint()
     var_model = VARModel(
         endo=data.endo,
         nlag=var_nlags,
@@ -151,6 +150,7 @@ def main():
     
     # Compute IRFs and confidence bands with Cholesky
     IR, var_results = var_ir(var_model.results, var_options)
+    breakpoint()
     INF, SUP, MED, BAR = var_irband(var_results, var_options)
 
     # IV IDENTIFICATION
