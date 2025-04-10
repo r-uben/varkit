@@ -158,7 +158,7 @@ class VARUtils:
             cholesky_decomp = np.linalg.cholesky(sigma_values)
             
             # Step 3: Create the DataFrame for B using the transposed Cholesky matrix
-            B = pd.DataFrame(cholesky_decomp.T, index=sigma.index, columns=sigma.columns)
+            B = pd.DataFrame(cholesky_decomp, index=sigma.index, columns=sigma.columns)
         except np.linalg.LinAlgError:
             raise ValueError('VCV is not positive definite')
         return B
@@ -168,7 +168,7 @@ class VARUtils:
         nvar = sigma.shape[0]
         Finf_big = np.linalg.inv(np.eye(len(Fcomp)) - Fcomp)
         Finf = Finf_big[:nvar, :nvar]
-        D = np.linalg.cholesky(Finf @ sigma @ Finf.T).T
+        D = np.linalg.cholesky(Finf @ sigma @ Finf.T)
         B = np.linalg.solve(Finf, D)
         return B
     

@@ -108,6 +108,7 @@ def var_ir(var_results: VARResults, var_options: Dict) -> Tuple[np.ndarray, VARR
     # Identification: Recover B matrix
     if var_options['ident'] == 'short':
         B = VARUtils.get_cholesky_identification_short(sigma)
+        breakpoint()
     elif var_options['ident'] == 'long':
         # B matrix is recovered with Cholesky on cumulative IR to infinity
         B = VARUtils.get_cholesky_identification_long(sigma, Fcomp)
