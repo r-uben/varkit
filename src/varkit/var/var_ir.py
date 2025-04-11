@@ -192,6 +192,7 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
         
         B = np.zeros((nvar, nvar))
         B[:, 0] = Biv  # First column is the identified shock
+        breakpoint()
         
         # Update VAR with IV results for potential further analysis
         var_results['FirstStage'] = first_stage
