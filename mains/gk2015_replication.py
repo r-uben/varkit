@@ -236,7 +236,7 @@ class VARAnalysis:
 def main():
     """Main replication script."""
     # Set random seed for reproducibility
-    np.random.seed(42)
+    np.random.seed(100)
     
     # Create configuration
     config = VARConfig.default_config()

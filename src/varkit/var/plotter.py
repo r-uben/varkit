@@ -176,7 +176,7 @@ class VARPlotter:
         for i, iv_var in enumerate(self.config.iv_names):
             # Plot median response
             ax.plot(
-                iv_results['BAR'][iv_var].loc[:, var], 
+                iv_results['MED'][iv_var].loc[:, var], 
                 '-', 
                 color=colors[i], 
                 linewidth=2, 

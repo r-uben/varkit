@@ -142,6 +142,7 @@ class ImpulseResponse:
                 # Scale B matrix by the computed factor
                 B = B * sp
                 self.__B = B
+                breakpoint()
                 
                 # Store IV-specific results
                 self.results.sigma_b = sigma_b
@@ -217,23 +218,16 @@ class ImpulseResponse:
             raise ValueError('You need to provide the data for the instrument in VAR (IV)')
         
 
-        shock_var = self.options['shock_var']
-
         # Retrieve and initialize variables
-        nsteps = self.options['nsteps']
         impact = self.options.get('impact', 0)  # Default to 0 (one stdev shock)
         recurs = self.options.get('recurs', 'wold')  # Default to 'wold'
         F_comp = self.results.F_comp
         nvar = self.results.nvar
-        nlag = self.results.nlag
-        sigma = self.results.sigma
-
-
         
         IR = {}  # Initialize dictionary for IRFs
         
         # Initialize response DataFrame
-        response = pd.DataFrame(np.zeros((nsteps, nvar)), columns=self.results.var_names)
+        response = pd.DataFrame(np.zeros((self.options['nsteps'], self.results.nvar)), columns=self.results.var_names)
         
         # Loop through all variables
         for var in self.results.var_names:
@@ -248,14 +242,14 @@ class ImpulseResponse:
             # Compute remaining steps based on recursion method
             if recurs == 'wold':
                 # Vectorized computation using Wold representation
-                for step in range(nsteps):
+                for step in range(self.options['nsteps']):
                     take_step = self.PSI.step == step
                     Psi = self.PSI.loc[take_step, self.results.var_names]
                     Psi.index = self.results.var_names
                     response.loc[step, :] = (Psi @ self.B @ impulse).values.flatten()
             else:  # recurs == 'comp'
                 # Vectorized computation using companion form
-                for step in range(1, nsteps):
+                for step in range(self.options['nsteps']):
                     response.loc[step, :] = (np.linalg.matrix_power(F_comp[:nvar, :nvar], step) @ self.B @ impulse).flatten()
 
             IR[var] = response.copy()  # Important to copy to avoid reference issues
@@ -263,6 +257,7 @@ class ImpulseResponse:
         # If using IV identification, ensure IR only contains shock_var response
         if self.options['ident'] == 'iv':
             IR = {self.options['shock_var']: IR[self.options['shock_var']]}
+        
         return IR
     
     def _get_bootstrapped_residuals(self, IV: Optional[np.ndarray] = None):
