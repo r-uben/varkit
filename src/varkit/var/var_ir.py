@@ -186,7 +186,7 @@ def var_ir(var_results: Dict, var_options: Dict) -> Tuple[np.ndarray, Dict]:
         # sp = sqrt(S11-(S21-s21s11*S11)'*(Q\(S21-s21s11*S11)));
         S21_term = S21 - s21s11 * S11
         sp = np.sqrt(S11 - S21_term.T @ np.linalg.solve(Q, S21_term))
-        
+        breakpoint()
         # Step 6: Rescale impact responses by shock size factor
         Biv = Biv * sp
         
