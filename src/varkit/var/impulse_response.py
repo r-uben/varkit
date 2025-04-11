@@ -127,7 +127,7 @@ class ImpulseResponse:
                 # Compute Q matrix following the formula in the paper, exactly as in MATLAB
                 # Q = s21s11*S11*s21s11'-(S21*s21s11'+s21s11*S21')+S22
                 Q = (s21s11 * S11 * s21s11.T) - (S21 @ s21s11.T + s21s11 @ S21.T) + S22
-
+                breakpoint()
                 # Compute shock scaling factor following the formula
                 # sp = sqrt(S11-(S21-s21s11*S11)'*(Q\(S21-s21s11*S11)));
                 S21_term = S21 - s21s11 * S11
