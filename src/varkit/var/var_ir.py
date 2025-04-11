@@ -59,7 +59,7 @@ class ImpulseResponse:
             
             # Step 1: Recover residuals (first variable is the one to be instrumented - order matters!)
             # In GK (2015), the first variable is the 1-year bond rate
-            resid = sm_var_results.resid  # Get residuals from statsmodels
+            resid = self.var_results.resid  # Get residuals from statsmodels
             breakpoint()
             up = resid[:, 0]     # residuals to be instrumented (1st variable)
             uq = resid[:, 1:]    # residuals for second stage (other variables)

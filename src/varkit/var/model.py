@@ -53,17 +53,17 @@ class Output:
     Y: pd.DataFrame
     X: pd.DataFrame
     fit: Any  # statsmodels VAR results
-    Ft: np.ndarray
     F: np.ndarray
     sigma: np.ndarray
-    Fcomp: np.ndarray
-    maxEig: float
+    F_comp: np.ndarray
+    max_eig: float
     var_names: List[str]
     B: Optional[np.ndarray] = None      # structural impact matrix
     Biv: Optional[np.ndarray] = None    # first columns of structural impact matrix
     PSI: Optional[np.ndarray] = None    # Wold multipliers
     Fp: Optional[np.ndarray] = None     # Recursive F by lag
     IV: Optional[np.ndarray] = None     # External instruments for identification
+    first_stage: Optional[Any] = None   # First stage of IV identification
 
 
 class Model:
@@ -149,8 +149,8 @@ class Model:
         
         # Get coefficients and compute companion matrix
         var_coefs = fit.params.values
-        Fcomp = VARUtils.compute_companion_matrix(var_coefs, self.nvar, self.nlag)
-        
+        F_comp = VARUtils.compute_companion_matrix(var_coefs, self.nvar, self.nlag)
+    
         # Store results
         self.__results = Output(
             endo=self.endo,
@@ -167,10 +167,9 @@ class Model:
             Y=Y,
             X=X,
             fit=fit,
-            Ft=fit.params.T,
             F=fit.params,
             sigma=fit.sigma_u,
-            Fcomp=Fcomp,
-            maxEig=np.max(np.abs(np.linalg.eigvals(Fcomp))),
+            F_comp=F_comp,
+            max_eig=np.max(np.abs(np.linalg.eigvals(F_comp))),
             var_names=fit.model.endog_names
         )

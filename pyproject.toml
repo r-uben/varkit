@@ -19,6 +19,7 @@ plotly = "^5.18.0"
 statsmodels = "^0.14.1"
 openpyxl = "^3.1.5"
 tqdm = "^4.67.1"
+colorama = "^0.4.6"
 
 [build-system]
 requires = ["poetry-core"]
