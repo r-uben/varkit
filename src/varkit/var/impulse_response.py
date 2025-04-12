@@ -364,17 +364,31 @@ class ImpulseResponse:
             # STEP 2.2: Generate artificial series by iterating VAR equations
             for jj, date in enumerate(y_artificial.index[nlag:]):
                 # Get the lag values in correct order using DataFrame operations
-                lag_data = y_artificial.loc[
-                    date - pd.DateOffset(months=nlag): 
-                    date - pd.DateOffset(months=1)
-                ]
-                # Reverse the order of lags and flatten maintaining correct structure
-                X = lag_data.iloc[::-1].values.flatten()  # This reverses the order to match [t-1, t-2, ...]
+                # Check if the data is month-start or month-end
+                is_month_end = y_artificial.index.is_month_end[0]
                 
+                # Always use 'M' for periods, but adjust the day when converting to timestamp
+                current_period = pd.Period(date, freq='M')
+                periods = pd.period_range(end=current_period - 1, periods=nlag, freq='M')
+                
+                # Convert to timestamps while preserving the original frequency
+                if is_month_end:
+                    dates = [pd.Timestamp(p.year, p.month, p.days_in_month) for p in periods]
+                else:
+                    dates = [pd.Timestamp(p.year, p.month, 1) for p in periods]
+                
+                dates = pd.DatetimeIndex(dates)
+                lag_data = y_artificial.loc[dates]
+
+                
+                # Verify we have valid data (no zeros)
+                if (lag_data == 0).all().any():
+                    raise ValueError(f"Invalid lag data found at date {date}")
+                    
+                X = lag_data.iloc[::-1].values.flatten()  # This reverses the order to match [t-1, t-2, ...]
                 # Construct LAGplus using the dedicated method
                 X = self._construct_lag_with_const_or_trend(X, const, jj, nlag)
                 X = pd.DataFrame(X, index=F.index)
-
                 # Generate values for time=jj for all variables
                 y_artificial.loc[date, :] =  (F.T @ X).values.flatten() + u.loc[date, :].values.flatten()
             # STEP 3: Estimate VAR on artificial bootstrapped data
@@ -395,13 +409,13 @@ class ImpulseResponse:
 
                 # STEP 4: Check stability of the bootstrapped VAR
                 max_eig = max(abs(np.linalg.eigvals(var_model.results.F_comp)))
-
+     
                 # STEP 5: Calculate impulse responses from bootstrapped VAR
-                if max_eig < 0.9999:
-                    impulse_response = ImpulseResponse(var_model.results, ir_options)
-                    IR_draw = impulse_response.get_impulse_response()
-                    
-                    IR[tt] = IR_draw[shock_var]
+                #if max_eig < 0.9999:
+                impulse_response = ImpulseResponse(var_model.results, ir_options)
+                IR_draw = impulse_response.get_impulse_response()
+                
+                IR[tt] = IR_draw[shock_var]
                     
                 
                 tt += 1
