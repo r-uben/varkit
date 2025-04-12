@@ -278,90 +278,9 @@ def main():
     # Create configuration
     config = VARConfig.default_config()
     
-<<<<<<< HEAD
-    # VAR specification
-    var_names = ['gs1', 'logcpi', 'logip', 'ebp']  # Order matters for Cholesky
-    iv_names = ['ss']
-    var_nlags = 12  # Monthly data, 1 year of lags
-    var_const = 1   # Include constant term
-    
-    # Load and prepare data
-    print("Loading and preparing data...")
-    data = Data.from_excel(data_path, var_names, iv_names)
-    
-    # Get long names for plotting
-    var_names_long = data.get_long_names(var_names)
-    
-    # Estimate VAR
-    print("\nEstimating VAR model...")
-    var_model = VARModel(
-        endo=data.endo,
-        nlag=var_nlags,
-        const=var_const
-    )
-    
-    # CHOLESKY IDENTIFICATION
-    print("\nEstimating Cholesky IRFs and error bands...")
-    var_options = {
-        'ident': 'short',  # Cholesky
-        'method': 'wild',  # Wild bootstrap
-        'nsteps': 48,      # 48 months
-        'ndraws': 200,     # 200 bootstrap replications
-        'pctg': 95,        # 95% confidence bands
-        'mult': 10         # Print progress every 10 draws
-    }
-    
-    # Compute IRFs and confidence bands with Cholesky
-    IR, var_results = var_ir(var_model.results, var_options)
-    
-    INF, SUP, MED, BAR = var_irband(var_results, var_options)
-
-    # IV IDENTIFICATION
-    print("\nEstimating IV IRFs and error bands...")
-    var_options['ident'] = 'iv'
-    var_options['method'] = 'wild'
-    
-    # Add IV data to VAR results
-    var_model.results['IV'] = data.iv.values
-
-    # Compute IRFs and confidence bands with IV identification
-    IRiv, var_results_iv = var_ir(var_model.results, var_options)
-    INFiv, SUPiv, MEDiv, BARiv = var_irband(var_results_iv, var_options)
-    
-    # Create figure with both Cholesky and IV
-    plt.figure(figsize=(20, 20))
-    
-    # Plot both identifications
-    for ii in range(data.nvar):
-        # Cholesky subplot (left column)
-        plt.subplot(4, 2, 2*ii + 1)
-        plt.plot(BAR[:, ii], '-r', linewidth=2, label='Cholesky')
-        plt.plot(INF[:, ii], '--r', linewidth=1)
-        plt.plot(SUP[:, ii], '--r', linewidth=1)
-        plt.plot(np.zeros(var_options['nsteps']), '-k')
-        plt.title(var_names_long[ii], fontweight='bold')
-        plt.axis('tight')
-        plt.legend()
-        
-        # IV subplot (right column)
-        plt.subplot(4, 2, 2*ii + 2)
-        plt.plot(BARiv[:, ii], '-k', linewidth=2, label='IV')
-        plt.plot(INFiv[:, ii], '--k', linewidth=1)
-        plt.plot(SUPiv[:, ii], '--k', linewidth=1)
-        plt.plot(np.zeros(var_options['nsteps']), '-k')
-        plt.title(var_names_long[ii], fontweight='bold')
-        plt.axis('tight')
-        plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig(output_path / f'irf_{iv_names[0]}.pdf')
-    plt.close()
-
-=======
     # Run analysis
     analysis = VARAnalysis(config)
     analysis.run_analysis()
->>>>>>> feature/optimize-var-estimation
 
 if __name__ == '__main__':
     main() 
