@@ -5,6 +5,7 @@ This module provides a comprehensive implementation of Vector Autoregression ana
 including estimation, inference, and various decomposition methods.
 """
 
-from .var_model import VARModel, VAROptions
+from .model import Model, Options, Output
+from .impulse_response import ImpulseResponse
 
-__all__ = ['VARModel', 'VAROptions'] 
+__all__ = ['Model', 'Options', 'Output', 'ImpulseResponse'] 

@@ -12,19 +12,44 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Dict, List
-from varkit.var.var_model import VARModel
-from varkit.var.var_ir import var_ir
-from varkit.var.var_irband import var_irband
+from typing import Optional, Dict, List, Tuple
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
+from colorama import init, Fore, Style
 
+from varkit.var.model import Model
+from varkit.var.options import Options
+from varkit.var.impulse_response import ImpulseResponse
+from varkit.var.plotter import VARPlotter, VARConfig
+
+# Initialize colorama for colored console output
+init(autoreset=True)
+
+# Set up Latin Modern Roman font
+plt.rcParams.update({
+    'font.family': 'Latin Modern Roman',
+    'font.size': 14,
+    'axes.titlesize': 16,
+    'axes.labelsize': 14,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'legend.fontsize': 12,
+    'axes.grid': True,
+    'grid.alpha': 0.3,
+    'axes.spines.top': False,
+    'axes.spines.right': False,
+    'text.usetex': True,  # Enable LaTeX rendering
+    'mathtext.fontset': 'custom',
+    'mathtext.rm': 'Latin Modern Roman',
+    'mathtext.it': 'Latin Modern Roman:italic',
+    'mathtext.bf': 'Latin Modern Roman:bold'
+})
 
 def parse_date(date_str: str) -> pd.Timestamp:
     """Parse date string in YYYYmM format."""
     year = int(date_str[:4])
     month = int(date_str[5:])  # Skip the 'm'
     return pd.Timestamp(year=year, month=month, day=1)
-
 
 @dataclass
 class Data:
@@ -58,7 +83,6 @@ class Data:
     def from_excel(cls, data_path: Path, var_names: List[str], iv_names: List[str]) -> 'Data':
         """Create Data instance from Excel file."""
         # Read Excel file
-     
         xl_data = pd.read_excel(data_path, header=None)
         vnames_long = [str(x).strip() for x in xl_data.iloc[0, 1:].tolist()]
         vnames_short = [str(x).strip() for x in xl_data.iloc[1, 1:].tolist()]
@@ -67,7 +91,7 @@ class Data:
         df = pd.read_excel(data_path, skiprows=2)
         dates = df.iloc[:, 0].apply(parse_date)
         df = df.iloc[:, 1:]
-        df.index = dates
+        df.index = pd.DatetimeIndex(dates, freq='MS')
         df.columns = vnames_short
         
         # Create mapping and DataFrames
@@ -105,17 +129,156 @@ class Data:
             long_names.append(rev_mapping[name])
         return long_names
 
+class VARAnalysis:
+    """Class for conducting VAR analysis."""
+    
+    def __init__(self, config: VARConfig):
+        self.config = config
+        self.data = None
+        self.plotter = VARPlotter(config)
+    
+    def load_data(self) -> None:
+        """Load and prepare data for analysis."""
+        print(f"{Fore.CYAN}Loading and preparing data...{Style.RESET_ALL}")
+        data_path = Path('data/gk2015/GK2015_Data.xlsx')
+        self.data = Data.from_excel(data_path, self.config.var_names, self.config.iv_names)
+        print(f"{Fore.GREEN}Data loaded successfully{Style.RESET_ALL}")
+    
+    def run_analysis(self) -> None:
+        """Run the complete VAR analysis."""
+        if self.data is None:
+            self.load_data()
+        
+        # Get long names for plotting
+        var_names_long = self.data.get_long_names(self.config.var_names)
+        
+        # Estimate VAR
+        print(f"\n{Fore.CYAN}Estimating VAR model...{Style.RESET_ALL}")
+        var_model = self._estimate_var()
+        
+        # Compute Cholesky identification
+        print(f"\n{Fore.CYAN}Estimating Cholesky IRFs and error bands...{Style.RESET_ALL}")
+        cholesky_results = self._compute_cholesky_identification(var_model)
+        
+        # Compute IV identification
+        print(f"\n{Fore.CYAN}Estimating IV IRFs and error bands...{Style.RESET_ALL}")
+        iv_results = self._compute_iv_identification(var_model)
+        
+        # Create plots
+        print(f"\n{Fore.CYAN}Creating comparison plots...{Style.RESET_ALL}")
+        output_path = Path('figures')
+        self.plotter.create_comparison_plot(cholesky_results, iv_results, var_names_long, output_path)
+    
+    def _estimate_var(self) -> Model:
+        """Estimate VAR model."""
+        return Model(
+            endo=self.data.endo,
+            nlag=self.config.nlags,
+            const=self.config.const
+        )
+    
+    def _get_base_options(self, ident: str) -> Dict:
+        """Get base options for impulse response calculation."""
+        return {
+            'ident': ident,
+            'method': 'wild',
+            'nsteps': self.config.nsteps,
+            'ndraws': self.config.ndraws,
+            'pctg': self.config.confidence_level,
+            'mult': 10,
+            'recurs': 'wold',
+            'shock_var': self.config.shock_var
+        }
+    
+    def _compute_cholesky_identification(self, var_model: Model) -> Tuple:
+        """Compute Cholesky identification."""
+        options = self._get_base_options('short')
+        impulse_response = ImpulseResponse(var_model.results, options)
+        IR = impulse_response.get_impulse_response()
+        return impulse_response.get_bands()
+    
+    def _compute_iv_identification(self, var_model: Model) -> Dict[str, Dict]:
+        """Compute IV identification for all instruments."""
+        options = self._get_base_options('iv')
+        results = {
+            'INF': {}, 'SUP': {}, 'BAR': {}, 'MED': {}
+        }
+        
+        for iv_var in self.config.iv_names:
+            print(f"{Fore.YELLOW}Processing instrument: {iv_var}{Style.RESET_ALL}")
+            
+            # Get common sample
+            common_sample = self.data.endo.index.intersection(
+                self.data.iv.dropna().index
+            )
+            
+            # Extend the endogenous data sample by nlags before the instrument start date
+            if len(common_sample) > 0:
+                start_date = common_sample[0]
+                extended_start_date = start_date - pd.offsets.MonthBegin(self.config.nlags)
+                extended_sample = self.data.endo.index[self.data.endo.index >= extended_start_date]
+                extended_sample = extended_sample.intersection(self.data.endo.index)
+            else:
+                extended_sample = common_sample
+                
+            # Reestimate VAR with extended sample for endogenous data
+            var_model_iv = Model(
+                endo=self.data.endo.loc[extended_sample],
+                nlag=self.config.nlags,
+                const=self.config.const
+            )
+            var_model_iv.results.IV = self.data.iv.loc[common_sample, iv_var].to_frame()
+            
+            # Compute IRFs and bands
+            impulse_response = ImpulseResponse(var_model_iv.results, options)
+            IRiv = impulse_response.get_impulse_response()
+            INF, SUP, MED, BAR = impulse_response.get_bands()
+            
+            # Store results
+            results['INF'][iv_var] = INF
+            results['SUP'][iv_var] = SUP
+            results['MED'][iv_var] = MED
+            results['BAR'][iv_var] = BAR
+        
+        return results
+
+
+@dataclass
+class VARConfig:
+    """Configuration for VAR analysis."""
+    var_names: List[str]
+    shock_var: str
+    iv_names: List[str]
+    nlags: int
+    const: int
+    nsteps: int
+    ndraws: int
+    confidence_level: float
+    
+    @classmethod
+    def default_config(cls) -> 'VARConfig':
+        """Create default configuration for GK2015 replication."""
+        return cls(
+            var_names=['gs1', 'logcpi', 'logip', 'ebp'],  # Order matters for Cholesky
+            shock_var='gs1',
+            iv_names=['ff4_tc'],
+            nlags=12,  # Monthly data, 1 year of lags
+            const=1,   # Include constant term
+            nsteps=48, # 48 months horizon
+            ndraws=200, # Bootstrap replications
+            confidence_level=95 # Confidence bands percentage
+        )
+
 
 def main():
     """Main replication script."""
     # Set random seed for reproducibility
     np.random.seed(42)
     
-    # Paths
-    data_path = Path('data/gk2015/GK2015_Data.xlsx')
-    output_path = Path('data/gk2015/figures')
-    output_path.mkdir(parents=True, exist_ok=True)
+    # Create configuration
+    config = VARConfig.default_config()
     
+<<<<<<< HEAD
     # VAR specification
     var_names = ['gs1', 'logcpi', 'logip', 'ebp']  # Order matters for Cholesky
     iv_names = ['ss']
@@ -194,6 +357,11 @@ def main():
     plt.savefig(output_path / f'irf_{iv_names[0]}.pdf')
     plt.close()
 
+=======
+    # Run analysis
+    analysis = VARAnalysis(config)
+    analysis.run_analysis()
+>>>>>>> feature/optimize-var-estimation
 
 if __name__ == '__main__':
     main() 

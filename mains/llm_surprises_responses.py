@@ -2,7 +2,7 @@
 Replication of Gertler and Karadi (2015, AEJ:M) with different monetary policy instruments.
 
 This script conducts VAR analysis comparing impulse responses to monetary policy shocks
-using Cholesky identification and two instruments: 'llm' and 'ff4_tc'.
+using Cholesky identification and two instruments: 'ss' and 'ff4_tc'.
 
 Based on:
 Gertler, M., & Karadi, P. (2015). Monetary policy surprises, credit costs, and economic activity.
@@ -19,91 +19,420 @@ import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
-from varkit.var.var_model import VARModel
-from varkit.var.var_ir import var_ir
-from varkit.var.var_irband import var_irband
 import matplotlib.pyplot as plt
-from tqdm.auto import tqdm
-from varkit.auxiliary import ols
-from varkit.utils import common_sample
+from colorama import init, Fore, Style
 
+from varkit.var.model import Model
+from varkit.var.options import Options
+from varkit.var.impulse_response import ImpulseResponse
+from varkit.var.plotter import VARPlotter, VARConfig
 
-def load_and_process_data(macro_path: Path, ff4_path: Path, ss_path: Path, 
-                          var_names: List[str], instrument_names: List[str]
-                          ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Loads, processes, and aligns data from specified CSV files."""
-    print("Loading and processing data...")
+# Initialize colorama for colored console output
+init(autoreset=True)
 
-    # 1. Macro DataCPILFESL
-    print(f"-> Loading macro data from {macro_path}")
-    macro_cols = ["FEDFUNDS",'DGS1', 'CPILFESL', 'INDPRO', 'gdp_real', 'ebp'] # Columns to load (Corrected to DGS1)
-    df_macro = pd.read_csv(macro_path, index_col=0, parse_dates=True)
-    df_macro = df_macro[macro_cols]
-    df_macro.columns = [col.lower() for col in df_macro.columns] # Lowercase names
-    df_macro['cpi'] = np.log(df_macro['cpilfesl']) # Log CPI
-    df_macro['ip'] = np.log(df_macro['indpro'])   # Log IP
-    df_macro = df_macro.drop(columns=['cpilfesl', 'indpro']) # Drop original columns
-    # Reorder columns to match var_names if necessary
-    df_macro = df_macro[var_names] 
-    df_macro.index = df_macro.index.to_period('M').to_timestamp('M') # Ensure monthly frequency at month end
+def parse_date(date_str: str) -> pd.Timestamp:
+    """Parse date string in YYYYmM format."""
+    year = int(date_str[:4])
+    month = int(date_str[5:])  # Skip the 'm'
+    return pd.Timestamp(year=year, month=month, day=1)
 
-    # 2. FF4 Instrument
-    print(f"-> Loading FF4 instrument data from {ff4_path}")
-    df_ff4 = pd.read_csv(ff4_path, usecols=['start', 'FF4'], parse_dates=['start'])
-    df_ff4 = df_ff4.dropna(subset=['FF4']) # Drop rows where FF4 is NaN before aggregation
-    # Aggregate by month - sum surprises within the month
-    # Convert 'start' to month period, group by month, sum FF4, convert index back to timestamp
-    ff4_monthly = df_ff4.set_index('start').resample('ME')['FF4'].sum().to_frame()
-    ff4_monthly.index = ff4_monthly.index.to_period('M').to_timestamp('M') # Align index to month end
-    ff4_monthly = ff4_monthly.rename(columns={'FF4': instrument_names[1]}) # Rename column
-
-    # 3. SS Instrument (formerly llm)
-    print(f"-> Loading SS instrument data from {ss_path}")
-    df_ss = pd.read_csv(ss_path, index_col=0, parse_dates=True)
-    df_ss.index = df_ss.index.to_period('M').to_timestamp('M') # Ensure monthly frequency at month end
-    df_ss = df_ss.rename(columns={'MPI': instrument_names[0]}) # Rename column
-
-    # 4. Combine and Align Data
-    print("-> Aligning data...")
-    # Use outer join first to see full range, then inner join or specific slicing
-    df_combined = pd.concat([df_macro, ff4_monthly, df_ss[[instrument_names[0]]]], axis=1)
+@dataclass
+class Data:
+    """Class to hold and manage VAR data."""
+    endo: pd.DataFrame
+    iv: pd.DataFrame
+    vnames_long: List[str]
+    vnames_short: List[str]
+    name_mapping: Dict[str, str]
     
-    # Use inner join to keep only dates where all data is available
-    df_aligned = df_combined.dropna() 
-    
-    print(f"  Aligned data range: {df_aligned.index.min()} to {df_aligned.index.max()}")
-    print(f"  Number of observations after alignment: {len(df_aligned)}")
+    def __post_init__(self):
+        """Initialize derived attributes after main attributes are set."""
+        self.nobs = len(self.endo)
+        self.nvar = len(self.endo.columns)
+        self.nvar_ex = len(self.iv.columns)
+        self.dates = self.endo.index
 
-    # Separate into endogenous and instruments
-    endo_df = df_aligned[var_names]
-    iv_df = df_aligned[instrument_names]
-
-    # Standardize iv_df (each column separately)
-    iv_df = (iv_df - iv_df.mean()) / iv_df.std()
-    
-    return endo_df, iv_df
-
-
-def compute_irf_with_instrument(var_model: VARModel, instrument_data: np.ndarray, 
-                              var_options: Dict) -> Tuple[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], Dict]:
-    """Compute IRFs and bands with a specific instrument.
-    
-    Returns:
-        tuple:
+    @classmethod
+    def from_csv(cls, macro_path: Path, ff4_path: Path, ss_path: Path, 
+                var_names: List[str], instrument_names: List[str], nlag: int) -> 'Data':
+        """Create Data instance from CSV files."""
+        print(f"{Fore.CYAN}Loading and processing data...{Style.RESET_ALL}")
         
-            - Tuple containing INF, SUP, MED, BAR arrays for IRFs
-            - Updated var_results dictionary from var_ir (may include F-stats)
-    """
-    # Create a copy of the results to avoid modifying the original model's results dict
-    results_copy = var_model.results.copy()
-    # Set the instrument in the copied results
-    results_copy['IV'] = instrument_data
+        # 1. Macro Data
+        print(f"{Fore.YELLOW}-> Loading macro data from {macro_path}{Style.RESET_ALL}")
+        macro_cols = ["FEDFUNDS", 'DGS1', 'CPILFESL', 'INDPRO', 'gdp_real', 'ebp']
+        df_macro = pd.read_csv(macro_path, index_col=0, parse_dates=True)
+        df_macro = df_macro[macro_cols]
+        df_macro.columns = [col.lower() for col in df_macro.columns]
+        df_macro['cpi'] = np.log(df_macro['cpilfesl'])
+        df_macro['ip'] = np.log(df_macro['indpro'])
+        df_macro['logcpi'] = np.log(df_macro['cpilfesl'])
+        df_macro['logip'] = np.log(df_macro['indpro'])
+        df_macro['gs1'] = df_macro['dgs1']
+        df_macro = df_macro.drop(columns=['cpilfesl', 'indpro'])
+        df_macro = df_macro[var_names]
+        df_macro.index = df_macro.index.to_period('M').to_timestamp('M')
+        df_macro = df_macro.dropna()  # Drop any rows with NaN in macro data
+        
+        # 2. FF4 Instrument
+        print(f"{Fore.YELLOW}-> Loading FF4 instrument data from {ff4_path}{Style.RESET_ALL}")
+        df_ff4 = pd.read_csv(ff4_path, usecols=['start', 'FF4'], parse_dates=['start'])
+        df_ff4 = df_ff4.dropna(subset=['FF4'])
+        ff4_monthly = df_ff4.set_index('start').resample('ME')['FF4'].sum().to_frame()
+        ff4_monthly.index = ff4_monthly.index.to_period('M').to_timestamp('M')
+        ff4_monthly = ff4_monthly.rename(columns={'FF4': instrument_names[1]})
+        
+        # 3. SS Instrument
+        print(f"{Fore.YELLOW}-> Loading SS instrument data from {ss_path}{Style.RESET_ALL}")
+        df_ss = pd.read_csv(ss_path, index_col=0, parse_dates=True)
+        df_ss.index = df_ss.index.to_period('M').to_timestamp('M')
+        df_ss = df_ss.rename(columns={'MPI': instrument_names[0]})
+        
+        # 4. Combine instruments data and handle alignment
+        print(f"{Fore.YELLOW}-> Aligning data...{Style.RESET_ALL}")
+        
+        # Combine both instruments datasets
+        iv_combined = pd.concat([ff4_monthly, df_ss[[instrument_names[0]]]], axis=1)
+        iv_combined = iv_combined.dropna()  # Drop rows with NaN in instruments
+        
+        # Get earliest date for instruments and macro data
+        iv_start_date = iv_combined.index.min()
+        macro_start_date = df_macro.index.min()
+        iv_end_date = iv_combined.index.max()
+        macro_end_date = df_macro.index.max()
+        end_date = min(iv_end_date, macro_end_date)
+        
+        # Create required window for aligned data
+        required_start_date = iv_start_date - pd.DateOffset(months=nlag)
+        
+        # CASE 1: Macro data starts early enough for pre-sample observations
+        
+        if macro_start_date <= required_start_date:
+            print(f"{Fore.GREEN}Macro data has enough pre-sample observations (starting from {macro_start_date}){Style.RESET_ALL}")
+            
+            macro_final = df_macro.loc[required_start_date:end_date]
+            iv_final = iv_combined.loc[required_start_date:end_date]
+            
+        # CASE 2: Macro data doesn't start early enough
+        else:
+            print(f"{Fore.YELLOW}Macro data doesn't have enough pre-sample observations. Using available data and adjusting instrument sample.{Style.RESET_ALL}")
+            
+            # Get the common sample between macro and instruments
+            common_dates = df_macro.index.intersection(iv_combined.index)
+            if len(common_dates) <= nlag:
+                raise ValueError(f"Not enough common observations. Need at least {nlag+1} observations, but only found {len(common_dates)}")
+            
+            # Create aligned datasets
+            macro_final = df_macro.loc[common_dates]
+            iv_temp = iv_combined.loc[common_dates]
+            
+            # Create IV DataFrame with NaN for first nlag observations
+            iv_final = iv_temp.copy()
+            iv_final.iloc[:nlag, :] = np.nan
+        
+        # Standardize instruments (excluding NaN)
+        # First compute mean and std for non-NaN values
+        iv_means = iv_final.mean()
+        iv_stds = iv_final.std()
+        
+        # Create standardized version with NaN preserved
+        iv_standardized = iv_final.copy()
+        for col in iv_standardized.columns:
+            # Only standardize non-NaN values
+            mask = ~iv_standardized[col].isna()
+            if mask.any():  # Check if there are any non-NaN values
+                iv_standardized.loc[mask, col] = (iv_standardized.loc[mask, col] - iv_means[col]) / iv_stds[col]
+        
+        # Verify alignment
+        print(f"{Fore.GREEN}Data aligned successfully:{Style.RESET_ALL}")
+        print(f"Macro data range: {macro_final.index.min()} to {macro_final.index.max()}, {len(macro_final)} observations")
+        print(f"Instrument data range: {iv_final.index.min()} to {iv_final.index.max()}, {len(iv_final)} observations")
+        print(f"First {nlag} IV observations are NaN for pre-sample")
+        non_nan_iv = iv_standardized.dropna()
+        print(f"Non-NaN instruments start at: {non_nan_iv.index.min()} ({len(non_nan_iv)} observations)")
+        
+        # Get variable names
+        vnames_long = [
+            "Federal Funds Rate",
+            "Consumer Price Index (log)",
+            "Industrial Production (log)",
+            "Excess Bond Premium"
+        ]
+        vnames_short = var_names
+        name_mapping = dict(zip(vnames_long, vnames_short))
+        
+        return cls(
+            endo=macro_final,
+            iv=iv_standardized,
+            vnames_long=vnames_long,
+            vnames_short=vnames_short,
+            name_mapping=name_mapping
+        )
     
-    # Compute IRFs and confidence bands using the copied results
-    _, var_results_iv = var_ir(results_copy, var_options)
-    INF, SUP, MED, BAR = var_irband(var_results_iv, var_options)
+    def get_long_names(self, short_names: List[str]) -> List[str]:
+        """Get long names corresponding to given short names."""
+        long_names = []
+        rev_mapping = {v: k for k, v in self.name_mapping.items()}
+        for name in short_names:
+            long_names.append(rev_mapping[name])
+        return long_names
+
+
+class VARAnalysis:
+    """Class for conducting VAR analysis."""
     
-    return (INF, SUP, MED, BAR), var_results_iv
+    def __init__(self, config: VARConfig):
+        self.config = config
+        self.data = None
+        self.plotter = VARPlotter(config)
+    
+    def load_data(self) -> None:
+        """Load and prepare data for analysis."""
+        print(f"{Fore.CYAN}Loading and preparing data...{Style.RESET_ALL}")
+        
+        # Paths for data sources
+        macro_path = Path('data/raw/macrodata.csv')
+        ff4_path = Path('data/raw/fomc_surprises_jk.csv')
+        ss_path = Path('data/gk2015/ss_surprises.csv')
+        
+        self.data = Data.from_csv(
+            macro_path=macro_path,
+            ff4_path=ff4_path,
+            ss_path=ss_path,
+            var_names=self.config.var_names,
+            instrument_names=self.config.iv_names,
+            nlag=self.config.nlags
+        )
+        
+        
+        print(f"{Fore.GREEN}Data loaded successfully{Style.RESET_ALL}")
+    
+    def run_analysis(self) -> None:
+        """Run the complete VAR analysis."""
+        if self.data is None:
+            self.load_data()
+        
+        # Get long names for plotting
+        var_names_long = self.data.get_long_names(self.config.var_names)
+        
+        # Estimate VAR
+        print(f"\n{Fore.CYAN}Estimating VAR model...{Style.RESET_ALL}")
+        var_model = self._estimate_var()
+        # Compute Cholesky identification
+        print(f"\n{Fore.CYAN}Estimating Cholesky IRFs and error bands...{Style.RESET_ALL}")
+        cholesky_results = self._compute_cholesky_identification(var_model)
+        
+        # Compute IV identification for first instrument (SS)
+        print(f"\n{Fore.CYAN}Estimating IV IRFs for {self.config.iv_names[0]}...{Style.RESET_ALL}")
+        ss_results = self._compute_iv_identification(var_model, self.config.iv_names[0])
+        
+        # Compute IV identification for second instrument (FF4)
+        print(f"\n{Fore.CYAN}Estimating IV IRFs for {self.config.iv_names[1]}...{Style.RESET_ALL}")
+        ff4_results = self._compute_iv_identification(var_model, self.config.iv_names[1])
+        
+        # Create comparison plots
+        print(f"\n{Fore.CYAN}Creating comparison plots...{Style.RESET_ALL}")
+        output_path = Path('figures')
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Create detailed figure with separate panels for each identification
+        self._create_detailed_plot(cholesky_results, ss_results, ff4_results, output_path)
+        
+        # Create figure with Cholesky vs both IV methods
+        self._create_comparison_plot(cholesky_results, ss_results, ff4_results, output_path)
+    
+    def _estimate_var(self) -> Model:
+        """Estimate VAR model."""
+        return Model(
+            endo=self.data.endo,
+            nlag=self.config.nlags,
+            const=self.config.const
+        )
+    
+    def _get_base_options(self, ident: str) -> Dict:
+        """Get base options for impulse response calculation."""
+        return {
+            'ident': ident,
+            'method': 'wild',
+            'nsteps': self.config.nsteps,
+            'ndraws': self.config.ndraws,
+            'pctg': self.config.confidence_level,
+            'mult': 10,
+            'recurs': 'wold',
+            'shock_var': self.config.shock_var
+        }
+    
+    def _compute_cholesky_identification(self, var_model: Model) -> Tuple:
+        """Compute Cholesky identification."""
+        options = self._get_base_options('short')
+        impulse_response = ImpulseResponse(var_model.results, options)
+        IR = impulse_response.get_impulse_response()
+        return impulse_response.get_bands()
+    
+    def _compute_iv_identification(self, var_model: Model, iv_name: str) -> Tuple:
+        """Compute IV identification for a specific instrument."""
+        options = self._get_base_options('iv')
+        
+        # Get the instrument data
+        iv_data = self.data.iv[[iv_name]].dropna()
+        
+        # Create a copy of the model results and add the specific instrument
+        results_copy = var_model.results
+        results_copy.IV = iv_data
+        
+        # Compute IRFs with the instrument
+        impulse_response = ImpulseResponse(results_copy, options)
+        IR = impulse_response.get_impulse_response()
+        
+        return impulse_response.get_bands()
+    
+    def _create_comparison_plot(self, cholesky_results, ss_results, ff4_results, output_path):
+        """Create comparison plot with Cholesky vs both IV methods."""
+        INF_chol, SUP_chol, MED_chol, BAR_chol = cholesky_results
+        INF_ss, SUP_ss, MED_ss, BAR_ss = ss_results
+        INF_ff4, SUP_ff4, MED_ff4, BAR_ff4 = ff4_results
+        
+        nvar = len(self.config.var_names)
+        
+        plt.figure(figsize=(12, 10))
+        
+        for ii in range(nvar):
+            # Cholesky subplot (left column)
+            plt.subplot(nvar, 2, 2*ii + 1)
+            plt.plot(BAR_chol[self.config.var_names[ii]], '-r', linewidth=2, 
+                     label=f'Cholesky (Shock: {self.config.shock_var})')
+            plt.fill_between(range(self.config.nsteps), 
+                             INF_chol[self.config.var_names[ii]], 
+                             SUP_chol[self.config.var_names[ii]], 
+                             color='r', alpha=0.2)
+            plt.plot(np.zeros(self.config.nsteps), '-k', linewidth=0.5)
+            plt.title(self.config.var_names[ii], fontweight='bold')
+            plt.ylabel("Response")
+            if ii == nvar - 1:
+                plt.xlabel("Months")
+            plt.axis('tight')
+            plt.legend()
+            
+            # IV methods subplot (right column)
+            plt.subplot(nvar, 2, 2*ii + 2)
+            
+            # SS instrument
+            plt.plot(BAR_ss[self.config.var_names[ii]], '-b', linewidth=2, 
+                     label=f'IV: {self.config.iv_names[0]}')
+            plt.fill_between(range(self.config.nsteps), 
+                             INF_ss[self.config.var_names[ii]], 
+                             SUP_ss[self.config.var_names[ii]], 
+                             color='b', alpha=0.1)
+            
+            # FF4 instrument
+            plt.plot(BAR_ff4[self.config.var_names[ii]], '-g', linewidth=2, 
+                     label=f'IV: {self.config.iv_names[1]}')
+            plt.fill_between(range(self.config.nsteps), 
+                             INF_ff4[self.config.var_names[ii]], 
+                             SUP_ff4[self.config.var_names[ii]], 
+                             color='g', alpha=0.1)
+            
+            plt.plot(np.zeros(self.config.nsteps), '-k', linewidth=0.5)
+            plt.title(self.config.var_names[ii], fontweight='bold')
+            if ii == nvar - 1:
+                plt.xlabel("Months")
+            plt.axis('tight')
+            plt.legend()
+        
+        plt.tight_layout()
+        output_filename = output_path / 'cholesky_vs_ivs_comparison.pdf'
+        plt.savefig(output_filename)
+        print(f"{Fore.GREEN}  Saved comparison plot to {output_filename}{Style.RESET_ALL}")
+        plt.close()
+    
+    def _create_detailed_plot(self, cholesky_results, ss_results, ff4_results, output_path):
+        """Create detailed plot with separate panels for each identification."""
+        INF_chol, SUP_chol, MED_chol, BAR_chol = cholesky_results
+        INF_ss, SUP_ss, MED_ss, BAR_ss = ss_results
+        INF_ff4, SUP_ff4, MED_ff4, BAR_ff4 = ff4_results
+        
+        nvar = len(self.config.var_names)
+        
+        plt.figure(figsize=(18, 10))
+        
+        for ii in range(nvar):
+            var_name = self.config.var_names[ii]
+            
+            # Cholesky subplot
+            plt.subplot(nvar, 3, 3*ii + 1)
+            plt.plot(BAR_chol[var_name], '-r', linewidth=2, 
+                     label=f'Cholesky (Shock: {self.config.shock_var})')
+            plt.fill_between(range(self.config.nsteps), 
+                             INF_chol[var_name], SUP_chol[var_name], 
+                             color='r', alpha=0.2)
+            plt.plot(np.zeros(self.config.nsteps), '-k', linewidth=0.5)
+            plt.title(f"{var_name} - Cholesky", fontweight='bold')
+            plt.ylabel("Response")
+            if ii == nvar - 1:
+                plt.xlabel("Months")
+            plt.axis('tight')
+            plt.legend()
+            
+            # SS instrument subplot
+            plt.subplot(nvar, 3, 3*ii + 2)
+            plt.plot(BAR_ss[var_name], '-b', linewidth=2, 
+                     label=f'IV: {self.config.iv_names[0]}')
+            plt.fill_between(range(self.config.nsteps), 
+                             INF_ss[var_name], SUP_ss[var_name], 
+                             color='b', alpha=0.2)
+            plt.plot(np.zeros(self.config.nsteps), '-k', linewidth=0.5)
+            plt.title(f"{var_name} - IV: {self.config.iv_names[0]}", fontweight='bold')
+            if ii == nvar - 1:
+                plt.xlabel("Months")
+            plt.axis('tight')
+            plt.legend()
+            
+            # FF4 instrument subplot
+            plt.subplot(nvar, 3, 3*ii + 3)
+            plt.plot(BAR_ff4[var_name], '-g', linewidth=2, 
+                     label=f'IV: {self.config.iv_names[1]}')
+            plt.fill_between(range(self.config.nsteps), 
+                             INF_ff4[var_name], SUP_ff4[var_name], 
+                             color='g', alpha=0.2)
+            plt.plot(np.zeros(self.config.nsteps), '-k', linewidth=0.5)
+            plt.title(f"{var_name} - IV: {self.config.iv_names[1]}", fontweight='bold')
+            if ii == nvar - 1:
+                plt.xlabel("Months")
+            plt.axis('tight')
+            plt.legend()
+        
+        plt.tight_layout()
+        output_filename = output_path / 'three_identifications_detailed.pdf'
+        plt.savefig(output_filename)
+        print(f"{Fore.GREEN}  Saved detailed plot to {output_filename}{Style.RESET_ALL}")
+        plt.close()
+
+
+@dataclass
+class VARConfig:
+    """Configuration for VAR analysis."""
+    var_names: List[str]
+    shock_var: str
+    iv_names: List[str]
+    nlags: int
+    const: int
+    nsteps: int
+    ndraws: int
+    confidence_level: float
+    
+    @classmethod
+    def default_config(cls) -> 'VARConfig':
+        """Create default configuration for LLM Surprises analysis."""
+        return cls(
+            var_names=['gs1', 'logcpi', 'logip', 'ebp'],  # Order matters for Cholesky
+            shock_var='gs1',
+            iv_names=['ss', 'ff4'],  # Two instruments to compare
+            nlags=12,  # Monthly data, 1 year of lags
+            const=1,   # Include constant term
+            nsteps=48, # 48 months horizon
+            ndraws=200, # Bootstrap replications
+            confidence_level=95 # Confidence bands percentage
+        )
 
 
 def main():
@@ -111,310 +440,12 @@ def main():
     # Set random seed for reproducibility
     np.random.seed(42)
     
-    # Paths for new data sources
-    macro_path = Path('data/raw/macrodata.csv')
-    ff4_path = Path('data/raw/fomc_surprises_jk.csv')
-    ss_path = Path('data/gk2015/ss_surprises.csv') # Using existing path for ss_surprises
-    output_path = Path('data/gk2015/figures') # Keep output path or change if needed
-    output_path.mkdir(parents=True, exist_ok=True)
+    # Create configuration
+    config = VARConfig.default_config()
     
-    # VAR specification based on user input
-    var_names = ['fedfunds', 'cpi','ip', 'ebp']  # Order matters for Cholesky (Corrected to dgs1)
-    instrument_names = ['ss', 'ff4']  # The two instruments to compare
-    var_nlags = 12  # Monthly data, 1 year of lags
-    var_const = 1   # Include constant term
-    
-    # Load, process, and align data
-    endo_df, iv_df = load_and_process_data(
-        macro_path, ff4_path, ss_path, var_names, instrument_names
-    )
-
-    #time_window = pd.date_range(start='2000-01-01', end='2009-01-01', freq='M')
-    #endo_df = endo_df.loc[endo_df.index.isin(time_window)]
-    #iv_df = iv_df.loc[iv_df.index.isin(time_window)]
-    #breakpoint()
-  
-    # Get variable and instrument names (using the lists directly now)
-    nvar = len(var_names)
-    # No longer need long names or mapping
-    
-    # Estimate VAR
-    print("\nEstimating VAR model...")
-    var_model = VARModel(
-        endo=endo_df,
-        nlag=var_nlags,
-        const=var_const
-    )
-    print(f"  VAR estimated with {var_model.nobs} effective observations.")
-    
-    # --- Calculate and Print First-Stage IV Diagnostics ---
-    print("\n--- Calculating First-Stage IV Diagnostics ---")
-    # Helper function for safe formatting
-    def format_safe(value, fmt=".4f"):
-        if isinstance(value, (int, float, np.number)) and not np.isnan(value):
-            return f"{value:{fmt}}"
-        return "N/A"
-        
-    resid = var_model.results['resid']
-    nlag = var_model.results['nlag']
-    
-    for inst_name in instrument_names:
-        print(f"\nInstrument: {inst_name}")
-        instrument_data = iv_df[inst_name].values.reshape(-1, 1)
-
-        up = resid[:, 0] 
-        iv_postlag = instrument_data[nlag:]
-        
-        if len(iv_postlag.shape) == 1:
-            iv_postlag_col = iv_postlag.reshape(-1, 1)
-        else:
-            iv_postlag_col = iv_postlag[:, 0].reshape(-1, 1)
-
-        if up.shape[0] != iv_postlag_col.shape[0]:
-             print(f"  Warning: Residuals length ({up.shape[0]}) != post-lag IV length ({iv_postlag_col.shape[0]}). Using common_sample.")
-        
-        z_combined = np.column_stack([up, iv_postlag_col])
-        aux, fo, lo = common_sample(z_combined, dim=0) 
-        
-        p = aux[:, 0]  # Matched residuals for first variable (dependent variable)
-        z = aux[:, 1:]  # Matched instrument data (independent variable)
-        
-        first_stage_rsq = np.nan
-        f_stat_standard = np.nan
-        f_stat_robust = np.nan
-        n_obs_fs = len(p) 
-        
-        if n_obs_fs < 2: 
-            print("  Error: Not enough overlapping observations for first-stage regression.")
-            continue 
-
-        try:
-            first_stage = ols(p, z) # add_constant=True by default
-        
-            # --- Manual R-squared Calculation ---
-            first_stage_resid_fs = first_stage.get('resid')
-            if first_stage_resid_fs is not None:
-                ss_res = np.sum(first_stage_resid_fs**2)
-                p_mean = np.mean(p)
-                ss_tot = np.sum((p - p_mean)**2)
-                if ss_tot > 1e-10: # Avoid division by zero if p is constant
-                     first_stage_rsq = 1 - (ss_res / ss_tot)
-                else:
-                     first_stage_rsq = np.nan # R-squared is undefined if variance of p is zero
-            else:
-                 print("  Warning: Could not retrieve residuals to calculate R-squared.")
-            # ------------------------------------
-            
-            # Standard F-stat
-            t_stats = first_stage.get('tstat') 
-            if isinstance(t_stats, (list, np.ndarray)) and len(t_stats) > 1:
-                t_stat_instr_raw = t_stats[1] 
-                t_stat_instr_scalar = t_stat_instr_raw[0] if isinstance(t_stat_instr_raw, (list, np.ndarray)) else t_stat_instr_raw
-                try:
-                    f_stat_standard = float(t_stat_instr_scalar)**2
-                except (TypeError, ValueError):
-                    f_stat_standard = np.nan
-            
-            # Robust F-stat
-            betas_fs = first_stage.get('beta')
-            if first_stage_resid_fs is not None and betas_fs is not None: # Check if resid was retrieved
-                # Construct X matrix 
-                if z.ndim == 1:
-                    X_fs = np.hstack([np.ones((n_obs_fs, 1)), z.reshape(-1, 1)])
-                else:
-                    X_fs = np.hstack([np.ones((n_obs_fs, 1)), z])
-                
-                if X_fs.shape[0] != n_obs_fs: 
-                     raise ValueError("X_fs row mismatch in diagnostic calculation.")
-                
-                k_vars_fs = X_fs.shape[1]
-                if n_obs_fs > k_vars_fs: 
-                    try:
-                        xtx_inv = np.linalg.inv(X_fs.T @ X_fs)
-                        resid_1d = first_stage_resid_fs.flatten()
-                        omega_hat = np.diag(resid_1d**2)
-                        
-                        if X_fs.T.shape[1] == omega_hat.shape[0]: 
-                            vcv_robust = xtx_inv @ (X_fs.T @ omega_hat @ X_fs) @ xtx_inv
-                            
-                            if vcv_robust.shape[0] > 1 and vcv_robust.shape[1] > 1:
-                                se_robust_beta1_val = np.sqrt(vcv_robust[1, 1])
-                                beta1_scalar = np.nan
-                                if isinstance(betas_fs, (list, np.ndarray)) and len(betas_fs) > 1:
-                                    beta1_raw = betas_fs[1]
-                                    beta1_scalar = beta1_raw[0] if isinstance(beta1_raw, (list, np.ndarray)) else beta1_raw
-                                
-                                if not np.isnan(beta1_scalar) and not np.isnan(se_robust_beta1_val) and se_robust_beta1_val != 0:
-                                    try:
-                                        t_robust = float(beta1_scalar) / float(se_robust_beta1_val)
-                                        f_stat_robust = t_robust**2
-                                    except (TypeError, ValueError):
-                                         f_stat_robust = np.nan 
-                        else:
-                             print("  Warning: Dimension mismatch calculating robust VCV.")
-                    except np.linalg.LinAlgError:
-                         print("  Warning: Singular matrix encountered calculating robust VCV.")
-                else:
-                     print("  Warning: Not enough degrees of freedom for robust VCV calculation.")
-            # else: # Implicitly handled by first_stage_resid_fs check earlier
-            #      print("  Warning: Could not retrieve residuals or betas for robust F-stat calculation.")
-
-        except Exception as e:
-            print(f"  Error calculating diagnostics for {inst_name}: {e}")
-
-        # Print diagnostics
-        print(f"  Observations in 1st Stage: {n_obs_fs}")
-        print(f"  R-squared: {format_safe(first_stage_rsq)}") # Now should show calculated value
-        print(f"  F-statistic (standard): {format_safe(f_stat_standard)}")
-        print(f"  F-statistic (robust): {format_safe(f_stat_robust)}")
-        if isinstance(f_stat_standard, (int, float, np.number)) and not np.isnan(f_stat_standard) and f_stat_standard < 10:
-            print("  Warning: Standard F-statistic is less than 10, indicating potential weak instrument.")
-            
-    print("----------------------------------------------")
-    # --- End Diagnostics Section ---
-
-    # CHOLESKY IDENTIFICATION
-    print("\nComputing Cholesky IRFs and Error Bands...")
-    var_options = {
-        'ident': 'short',  # Cholesky
-        'method': 'wild',  # Wild bootstrap
-        'nsteps': 48,      # 48 months
-        'ndraws': 200,     # 200 bootstrap replications (adjust if needed)
-        'pctg': 95,        # 95% confidence bands
-        'mult': 10         # Print progress every 10 draws
-    }
-    
-    # Compute IRFs and confidence bands with Cholesky
-    # The shock is implicitly the first variable due to 'short' ident
-    _, var_results_chol = var_ir(var_model.results, var_options) 
-    INF_chol, SUP_chol, MED_chol, BAR_chol = var_irband(var_results_chol, var_options)
-    
-    # IV IDENTIFICATION
-    print("\nEstimating IV IRFs and error bands for both instruments...")
-    var_options_iv = var_options.copy() # Use a copy for IV options, change ident
-    var_options_iv['ident'] = 'iv'
-    
-    # Compute IRFs for first instrument (ss)
-    print(f"\n -> Instrument: {instrument_names[0]}")
-    (INF1, SUP1, MED1, BAR1), _ = compute_irf_with_instrument(
-        var_model, 
-        iv_df[instrument_names[0]].values.reshape(-1, 1), # Pass the specific instrument data
-        var_options_iv
-    )
-    
-    # Compute IRFs for second instrument (ff4)
-    print(f"\n -> Instrument: {instrument_names[1]}")
-    (INF2, SUP2, MED2, BAR2), _ = compute_irf_with_instrument( # Removed var_results_ff4 capture
-        var_model, 
-        iv_df[instrument_names[1]].values.reshape(-1, 1), # Pass the specific instrument data
-        var_options_iv
-    )
-    
-    # Create figure with Cholesky (left) and both IV methods (right)
-    print("\nGenerating plots...")
-    print("-> Generating comparison plot (Cholesky vs IVs)...")
-    plt.figure(figsize=(12, 10)) # Adjusted figure size
-    
-    # Plot all three identification approaches
-    for ii in range(nvar):
-        # Cholesky subplot (left column) - Response to first variable shock
-        plt.subplot(nvar, 2, 2*ii + 1)
-        # BAR_chol shape is (nsteps, nvar) assuming response to first shock only
-        plt.plot(BAR_chol[:, ii], '-r', linewidth=2, label=f'Cholesky (Shock: {var_names[0]})') 
-        plt.fill_between(np.arange(var_options['nsteps']), 
-                         INF_chol[:, ii], SUP_chol[:, ii], 
-                         color='r', alpha=0.2)
-        plt.plot(np.zeros(var_options['nsteps']), '-k', linewidth=0.5)
-        plt.title(var_names[ii], fontweight='bold')
-        plt.ylabel("Response")
-        if ii == nvar - 1:
-            plt.xlabel("Months")
-        plt.axis('tight')
-        plt.legend()
-        
-        # IV methods subplot (right column)
-        # BAR1/BAR2 shape is (nsteps, nvar) as IV identifies one shock
-        plt.subplot(nvar, 2, 2*ii + 2)
-        
-        # First instrument (ss)
-        plt.plot(BAR1[:, ii], '-b', linewidth=2, label=f'IV: {instrument_names[0]}')
-        plt.fill_between(np.arange(var_options_iv['nsteps']), 
-                         INF1[:, ii], SUP1[:, ii], 
-                         color='b', alpha=0.1)
-        
-        # Second instrument (ff4)
-        plt.plot(BAR2[:, ii], '-g', linewidth=2, label=f'IV: {instrument_names[1]}')
-        plt.fill_between(np.arange(var_options_iv['nsteps']), 
-                         INF2[:, ii], SUP2[:, ii], 
-                         color='g', alpha=0.1)
-        
-        plt.plot(np.zeros(var_options_iv['nsteps']), '-k', linewidth=0.5)
-        plt.title(var_names[ii], fontweight='bold')
-        # plt.ylabel("Response") # Redundant y-label
-        if ii == nvar - 1:
-            plt.xlabel("Months")
-        plt.axis('tight')
-        plt.legend()
-    
-    plt.tight_layout()
-    output_filename_comp = output_path / 'cholesky_vs_ivs_new_data.pdf'
-    plt.savefig(output_filename_comp)
-    print(f"  Saved comparison plot to {output_filename_comp}")
-    plt.close() # Close the figure
-    
-    # Create more detailed figure with separate panels for each identification
-    print("-> Generating detailed plot (separate identifications)...")
-    plt.figure(figsize=(18, 10)) # Adjusted figure size
-    for ii in range(nvar):
-        # Cholesky subplot
-        plt.subplot(nvar, 3, 3*ii + 1)
-        # BAR_chol shape is (nsteps, nvar) assuming response to first shock only
-        plt.plot(BAR_chol[:, ii], '-r', linewidth=2, label=f'Cholesky (Shock: {var_names[0]})')
-        plt.fill_between(np.arange(var_options['nsteps']), 
-                         INF_chol[:, ii], SUP_chol[:, ii], 
-                         color='r', alpha=0.2)
-        plt.plot(np.zeros(var_options['nsteps']), '-k', linewidth=0.5)
-        plt.title(f"{var_names[ii]} - Cholesky", fontweight='bold')
-        plt.ylabel("Response")
-        if ii == nvar - 1:
-            plt.xlabel("Months")
-        plt.axis('tight')
-        plt.legend()
-        
-        # First IV subplot (ss)
-        plt.subplot(nvar, 3, 3*ii + 2)
-        plt.plot(BAR1[:, ii], '-b', linewidth=2, label=f'IV: {instrument_names[0]}')
-        plt.fill_between(np.arange(var_options_iv['nsteps']), 
-                         INF1[:, ii], SUP1[:, ii], 
-                         color='b', alpha=0.2)
-        plt.plot(np.zeros(var_options_iv['nsteps']), '-k', linewidth=0.5)
-        plt.title(f"{var_names[ii]} - IV: {instrument_names[0]}", fontweight='bold')
-        # plt.ylabel("Response")
-        if ii == nvar - 1:
-            plt.xlabel("Months")
-        plt.axis('tight')
-        plt.legend()
-        
-        # Second IV subplot (ff4)
-        plt.subplot(nvar, 3, 3*ii + 3)
-        plt.plot(BAR2[:, ii], '-g', linewidth=2, label=f'IV: {instrument_names[1]}')
-        plt.fill_between(np.arange(var_options_iv['nsteps']), 
-                         INF2[:, ii], SUP2[:, ii], 
-                         color='g', alpha=0.2)
-        plt.plot(np.zeros(var_options_iv['nsteps']), '-k', linewidth=0.5)
-        plt.title(f"{var_names[ii]} - IV: {instrument_names[1]}", fontweight='bold')
-        # plt.ylabel("Response")
-        if ii == nvar - 1:
-            plt.xlabel("Months")
-        plt.axis('tight')
-        plt.legend()
-    
-    plt.tight_layout()
-    output_filename_detail = output_path / 'three_identifications_detailed_new_data.pdf'
-    plt.savefig(output_filename_detail)
-    print(f"  Saved detailed plot to {output_filename_detail}")
-    plt.close()
-    print("\nScript finished.")
+    # Run analysis
+    analysis = VARAnalysis(config)
+    analysis.run_analysis()
 
 
 if __name__ == '__main__':
