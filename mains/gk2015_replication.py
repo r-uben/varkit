@@ -212,9 +212,18 @@ class VARAnalysis:
                 self.data.iv.dropna().index
             )
             
-            # Reestimate VAR with common sample
+            # Extend the endogenous data sample by nlags before the instrument start date
+            if len(common_sample) > 0:
+                start_date = common_sample[0]
+                extended_start_date = start_date - pd.offsets.MonthBegin(self.config.nlags)
+                extended_sample = self.data.endo.index[self.data.endo.index >= extended_start_date]
+                extended_sample = extended_sample.intersection(self.data.endo.index)
+            else:
+                extended_sample = common_sample
+                
+            # Reestimate VAR with extended sample for endogenous data
             var_model_iv = Model(
-                endo=self.data.endo.loc[common_sample],
+                endo=self.data.endo.loc[extended_sample],
                 nlag=self.config.nlags,
                 const=self.config.const
             )
@@ -233,10 +242,38 @@ class VARAnalysis:
         
         return results
 
+
+@dataclass
+class VARConfig:
+    """Configuration for VAR analysis."""
+    var_names: List[str]
+    shock_var: str
+    iv_names: List[str]
+    nlags: int
+    const: int
+    nsteps: int
+    ndraws: int
+    confidence_level: float
+    
+    @classmethod
+    def default_config(cls) -> 'VARConfig':
+        """Create default configuration for GK2015 replication."""
+        return cls(
+            var_names=['gs1', 'logcpi', 'logip', 'ebp'],  # Order matters for Cholesky
+            shock_var='gs1',
+            iv_names=['ff4_tc'],
+            nlags=12,  # Monthly data, 1 year of lags
+            const=1,   # Include constant term
+            nsteps=48, # 48 months horizon
+            ndraws=200, # Bootstrap replications
+            confidence_level=95 # Confidence bands percentage
+        )
+
+
 def main():
     """Main replication script."""
     # Set random seed for reproducibility
-    np.random.seed(100)
+    np.random.seed(42)
     
     # Create configuration
     config = VARConfig.default_config()

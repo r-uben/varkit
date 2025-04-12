@@ -74,17 +74,12 @@ class ImpulseResponse:
                 resid = self.fit.resid  # Get residuals from statsmodels
                 up = resid.loc[:, self.options['shock_var']]     # residuals to be instrumented (1st variable)
                 uq = resid.loc[:, self.results.endo.columns.drop(self.options['shock_var'])]    # residuals for second stage (other variables)
-
-                # Step 2: Prepare instrument data
-                # Make sample of IV comparable with up and uq by matching post-lag samples
-                # using the CommonSample function (exactly as in MATLAB)
-                # First get post-lag IV data
-                iv_postlag = self.results.IV.iloc[self.results.nlag:]
+                
 
                 # Step 3: First stage regression (Keep this part to get p_hat)
                 # Regress first variable residuals on instrument
-                up, iv_postlag = self._get_common_sample(up, iv_postlag)
-                first_stage = sm.OLS(up, sm.add_constant(iv_postlag)).fit()  # add_constant=True by default
+                up, iv = self._get_common_sample(up, self.results.IV)
+                first_stage = sm.OLS(up, sm.add_constant(iv)).fit()  # add_constant=True by default
                 up_hat = pd.DataFrame(first_stage.predict(), index=up.index, columns=[self.options['shock_var']])  # Use statsmodels to get fitted values
                 self.results.first_stage = first_stage 
                 
@@ -101,9 +96,10 @@ class ImpulseResponse:
                 
                 # Run second stage regression for all variables at once
                 second_stage = sm.OLS(uq, sm.add_constant(up_hat)).fit()
+
                 
                 # Store coefficients directly in B matrix (skipping constant)
-                B.loc[uq.columns, self.options['shock_var']] = second_stage.params[1:].values.flatten()
+                B.loc[uq.columns, self.options['shock_var']] = second_stage.params.loc[self.options['shock_var'],:].values.flatten()
 
                 # Step 5: Calculate shock size scaling factor
                 # Update size of the shock following function 4 of Gertler and Karadi (2015)
@@ -113,10 +109,7 @@ class ImpulseResponse:
                 u = pd.concat([up, uq], axis=1)
 
                 # Calculate the variance-covariance matrix of residuals using pandas
-                pq_mean = np.mean(u, axis=0)
-                pq_demeaned = u - np.tile(pq_mean, (len(u), 1))  # Center the data
-                sigma_b = (1/(len(u)-self.results.ntotcoeff)) * (pq_demeaned.T @ pq_demeaned)
-                
+                sigma_b = u.cov() * (len(u) / (len(u) - self.results.ntotcoeff))  # Calculate variance-covariance matrix directly
                 # Extract components following MATLAB notation for clarity
                 # s21s11 is the vector of second stage coefficients (impact responses)
                 s21s11 = B.loc[uq.columns, self.options['shock_var']]  # Column vector
@@ -127,7 +120,6 @@ class ImpulseResponse:
                 # Compute Q matrix following the formula in the paper, exactly as in MATLAB
                 # Q = s21s11*S11*s21s11'-(S21*s21s11'+s21s11*S21')+S22
                 Q = (s21s11 * S11 * s21s11.T) - (S21 @ s21s11.T + s21s11 @ S21.T) + S22
-                breakpoint()
                 # Compute shock scaling factor following the formula
                 # sp = sqrt(S11-(S21-s21s11*S11)'*(Q\(S21-s21s11*S11)));
                 S21_term = S21 - s21s11 * S11
@@ -142,7 +134,7 @@ class ImpulseResponse:
                 # Scale B matrix by the computed factor
                 B = B * sp
                 self.__B = B
-                breakpoint()
+                
                 
                 # Store IV-specific results
                 self.results.sigma_b = sigma_b
@@ -222,8 +214,7 @@ class ImpulseResponse:
         impact = self.options.get('impact', 0)  # Default to 0 (one stdev shock)
         recurs = self.options.get('recurs', 'wold')  # Default to 'wold'
         F_comp = self.results.F_comp
-        nvar = self.results.nvar
-        
+
         IR = {}  # Initialize dictionary for IRFs
         
         # Initialize response DataFrame
@@ -250,7 +241,7 @@ class ImpulseResponse:
             else:  # recurs == 'comp'
                 # Vectorized computation using companion form
                 for step in range(self.options['nsteps']):
-                    response.loc[step, :] = (np.linalg.matrix_power(F_comp[:nvar, :nvar], step) @ self.B @ impulse).flatten()
+                    response.loc[step, :] = (np.linalg.matrix_power(F_comp[:self.results.nvar, :self.results.nvar], step) @ self.B @ impulse).flatten()
 
             IR[var] = response.copy()  # Important to copy to avoid reference issues
 
@@ -272,11 +263,8 @@ class ImpulseResponse:
             if self.options.get('ident') == 'iv' and IV is not None:
                 # For IV, we need to bootstrap both residuals and instrument
                 rr = 1 - 2 * (np.random.rand(self.results.IV.shape[0], self.results.IV.shape[1]) > 0.5)
-                u = self.results.fit.resid * (rr[self.results.nlag:, :] @ np.ones((self.results.IV.shape[1], self.results.nvar)))
-                z = pd.DataFrame(np.vstack([
-                    self.results.IV[:self.results.nlag],  # Keep first nlag observations as is
-                    self.results.IV[self.results.nlag:] * rr[self.results.nlag:, :]  # Bootstrap the rest of instrument data
-                ]), index=self.results.IV.index)
+                u = self.results.fit.resid * (rr @ np.ones((self.results.IV.shape[1], self.results.nvar)))
+                z = self.results.IV * rr
                 return u, z
             else:
                 # For Cholesky or other methods, just bootstrap residuals
@@ -353,17 +341,7 @@ class ImpulseResponse:
                 freq=original_freq
             )
         )
-
-        # Create LAG with proper frequency
-        LAG = pd.DataFrame(
-            np.zeros((nlag, nvar)), 
-            index=pd.date_range(
-                start=self.results.endo.index[0],
-                periods=nlag,
-                freq=original_freq
-            ),
-            columns=self.results.endo.columns
-        )
+        y_artificial.iloc[:nlag, :] = self.results.endo.iloc[:nlag, :]
 
         # Initialize storage for IRs (storing draws for all variables' responses to the first shock)
         IR = {}
@@ -374,43 +352,39 @@ class ImpulseResponse:
         pbar = tqdm(total=ndraws, desc="Bootstrap Draws")
         attempts = 0
         max_attempts = ndraws * 5  # Limit attempts to prevent infinite loops
+        
+        F = self.fit.params
 
         while tt < ndraws and attempts < max_attempts:
             attempts += 1
             # Get bootstrapped residuals
             u, z = self._get_bootstrapped_residuals(IV)
- 
-            # Reset values while keeping the index
-            y_artificial.iloc[:] = 0
-            
-            # STEP 2.1: Initialize first nlag observations with real data
-            for jj in range(nlag):
-                y_artificial.iloc[jj] = self.results.endo.iloc[jj]
-            
             # Get the coefficient matrices
-            F = self.fit.params
+
             # STEP 2.2: Generate artificial series by iterating VAR equations
-            for jj in range(nlag, nobs):
+            for jj, date in enumerate(y_artificial.index[nlag:]):
                 # Get the lag values in correct order using DataFrame operations
-                lag_data = y_artificial.iloc[jj-nlag:jj]
+                lag_data = y_artificial.loc[
+                    date - pd.DateOffset(months=nlag): 
+                    date - pd.DateOffset(months=1)
+                ]
                 # Reverse the order of lags and flatten maintaining correct structure
                 X = lag_data.iloc[::-1].values.flatten()  # This reverses the order to match [t-1, t-2, ...]
                 
                 # Construct LAGplus using the dedicated method
                 X = self._construct_lag_with_const_or_trend(X, const, jj, nlag)
-                
+                X = pd.DataFrame(X, index=F.index)
+
                 # Generate values for time=jj for all variables
-                y_artificial.iloc[jj, :] =  F.T @ X + u.iloc[jj-nlag, :]
-            
+                y_artificial.loc[date, :] =  (F.T @ X).values.flatten() + u.loc[date, :].values.flatten()
             # STEP 3: Estimate VAR on artificial bootstrapped data
             try:
                 
                 var_model = Model(
                     endo=y_artificial,
                     nlag=nlag,
-                    const=const
-                )
-                
+                    const=const)
+
                 # For IV, use bootstrapped instrument
                 if 'z' in locals() and z is not None:
                     var_model.results.IV = z

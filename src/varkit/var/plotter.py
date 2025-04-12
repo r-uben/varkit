@@ -30,7 +30,7 @@ class VARConfig:
         return cls(
             var_names=['gs1', 'logcpi', 'logip', 'ebp'],  # Order matters for Cholesky
             shock_var='gs1',
-            iv_names=['ff4_tc', 'ss'],
+            iv_names=['ff4_tc'],
             nlags=12,  # Monthly data, 1 year of lags
             const=1,   # Include constant term
             nsteps=48, # 48 months horizon
