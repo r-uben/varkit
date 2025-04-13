@@ -15,6 +15,7 @@ import statsmodels.api as sm
 
 from .model import Model, Output
 from ..utils.var import VARUtils
+from ..utils.general import GeneralUtils
 # Estimate VAR on bootstrapped data
 from .model import Model
 
@@ -33,7 +34,10 @@ class ImpulseResponse:
         self.__B = None
         self.__PSI = None
         self.__Fp = None
+        self.__sigma_b = None
 
+        self.__up, self.__uq = None, None
+        self.__iv = None
         # Align IV data with endogenous variables if using IV identification
         self._align_iv_data()
 
@@ -48,6 +52,26 @@ class ImpulseResponse:
         if self.__Fp is None:
             self.__PSI, self.__Fp = self.get_wold_representation()
         return self.__Fp
+    
+    @property
+    def up(self):
+        if self.__up is None:
+            self.__up, self.__uq = self._recover_residuals()
+            self.__up, self.__iv = GeneralUtils.get_common_sample(self.__up, self.iv)
+        return self.__up
+    
+    @property
+    def uq(self):
+        if self.__uq is None:
+            self.__up, self.__uq = self._recover_residuals()
+        return self.__uq
+    
+    @property
+    def iv(self):
+        if self.__iv is None:
+            self.__iv = self.results.IV
+            self.__up, self.__iv = GeneralUtils.get_common_sample(self.up, self.__iv)
+        return self.__iv
 
     @property
     def B(self):
@@ -66,80 +90,24 @@ class ImpulseResponse:
             elif self.options['ident'] == 'iv':
                 # B matrix is recovered with external instrument IV
                 # This implementation follows Gertler and Karadi (2015) methodology
-                
-                # Step 1: Recover residuals (first variable is the one to be instrumented - order matters!)
-                # In GK (2015), the first variable is the 1-year bond rate
-                resid = self.fit.resid  # Get residuals from statsmodels
-                up = resid.loc[:, self.options['shock_var']]     # residuals to be instrumented (1st variable)
-                uq = resid.loc[:, self.results.endo.columns.drop(self.options['shock_var'])]    # residuals for second stage (other variables)
-                
 
-                # Step 3: First stage regression (Keep this part to get p_hat)
+                # Step 1: First stage regression (Keep this part to get p_hat)
                 # Regress first variable residuals on instrument
-                up, iv = self._get_common_sample(up, self.results.IV)
-                first_stage = sm.OLS(up, sm.add_constant(iv)).fit()  # add_constant=True by default
-                up_hat = pd.DataFrame(first_stage.predict(), index=up.index, columns=[self.options['shock_var']])  # Use statsmodels to get fitted values
+                first_stage = self._iv_var_first_stage()
                 self.results.first_stage = first_stage 
 
-                # Step 4: Second stage regressions to get impact responses
-                B = pd.DataFrame(
-                    np.zeros((self.results.nvar, self.results.nvar)),
-                    index=self.results.endo.columns,
-                    columns=self.results.endo.columns
-                )
-                B.loc[self.options['shock_var'], self.options['shock_var']] = 1  # First element normalized to 1
-                
-                # Get common sample for all variables at once
-                uq, up_hat = self._get_common_sample(uq, up_hat)
-                
-                # Run second stage regression for all variables at once
-                second_stage = sm.OLS(uq, sm.add_constant(up_hat)).fit()
+                # Step 2: Second stage regressions to get impact responses
+                self.__B = self._iv_var_second_stage(first_stage)
 
-                
-                # Convert to DataFrame if it's a Series to handle both cases uniformly
-                params = second_stage.params if isinstance(second_stage.params, pd.DataFrame) else pd.DataFrame(second_stage.params)
-
-                # Now we can safely use DataFrame indexing
-                B.loc[uq.columns, self.options['shock_var']] = params.loc[self.options['shock_var']].values
-
-                # Step 5: Calculate shock size scaling factor
+                # Step 3: Calculate shock size scaling factor
                 # Update size of the shock following function 4 of Gertler and Karadi (2015)
                 # This adjusts the shock size to account for proxy variable imperfections
-                
-                # Get residuals from both first and second stage
-                u = pd.concat([up, uq], axis=1)
+                sp = self._compute_scale_factor(self.__B)  
 
-                # Calculate the variance-covariance matrix of residuals using pandas
-                sigma_b = u.cov() * (len(u) / (len(u) - self.results.ntotcoeff))  # Calculate variance-covariance matrix directly
-                # Extract components following MATLAB notation for clarity
-                # s21s11 is the vector of second stage coefficients (impact responses)
-                s21s11 = B.loc[uq.columns, self.options['shock_var']]  # Column vector
-                S11 = sigma_b.loc[self.options['shock_var'], self.options['shock_var']]           # Variance of first variable residuals
-                S21 = sigma_b.loc[uq.columns, self.options['shock_var']] # Covariance of other vars with first var
-                S22 = sigma_b.loc[uq.columns, uq.columns]        # Variance-covariance of other variables
-
-                # Compute Q matrix following the formula in the paper, exactly as in MATLAB
-                # Q = s21s11*S11*s21s11'-(S21*s21s11'+s21s11*S21')+S22
-                Q = (s21s11 * S11 * s21s11.T) - (S21 @ s21s11.T + s21s11 @ S21.T) + S22
-                # Compute shock scaling factor following the formula
-                # sp = sqrt(S11-(S21-s21s11*S11)'*(Q\(S21-s21s11*S11)));
-                S21_term = S21 - s21s11 * S11
-                term = S11 - S21_term.T @ np.linalg.solve(Q, S21_term)
-                
-                # Silently reject draws with invalid terms by returning None
-                if term <= 0 or np.isnan(term):
-                    return None
-                    
-                sp = np.sqrt(term)
-        
-                # Scale B matrix by the computed factor
-                B = B * sp
-                self.__B = B
-                
-                
-                # Store IV-specific results
-                self.results.sigma_b = sigma_b
-                self.results.Biv = B.loc[:, self.options['shock_var']]
+                # Final step: Scale B matrix by the computed factor and store results
+                self.__B = self.__B * sp
+                self.results.sigma_b = self.__sigma_b
+                self.results.Biv = self.__B.loc[:, self.options['shock_var']]
             else:
                 raise ValueError(
                     'Identification incorrectly specified.\n'
@@ -150,8 +118,6 @@ class ImpulseResponse:
                     '- iv:  external instrument'
                 )
         return self.__B
-
-
 
     def get_wold_representation(self) -> Tuple[pd.DataFrame, Dict[int, pd.DataFrame]]:
         """Compute Wold representation matrices for a VAR model.
@@ -252,29 +218,6 @@ class ImpulseResponse:
         
         return IR
     
-    def _get_bootstrapped_residuals(self, IV: Optional[np.ndarray] = None):
-
-        if self.options['method'] == 'bs':
-            # Standard bootstrap: randomly sample residuals with replacement
-            idx = np.random.randint(0, self.results.nobs-self.results.nlag, self.results.nobs-self.results.nlag)
-            u = self.results.fit.resid[idx]
-            return u, None
-        elif self.options['method'] == 'wild':
-            # Wild bootstrap: multiply residuals by random +1/-1
-            if self.options.get('ident') == 'iv' and IV is not None:
-                # For IV, we need to bootstrap both residuals and instrument
-                rr = 1 - 2 * (np.random.rand(self.results.IV.shape[0], self.results.IV.shape[1]) > 0.5)
-                u = self.results.fit.resid * (rr @ np.ones((self.results.IV.shape[1], self.results.nvar)))
-                z = self.results.IV * rr
-                return u, z
-            else:
-                # For Cholesky or other methods, just bootstrap residuals
-                rr = 1 - 2 * (np.random.rand(self.results.fit.resid.shape[0], 1) > 0.5)
-                u = self.results.fit.resid * (rr @ np.ones((1, self.results.nvar)))
-                return u, None
-        else:
-            raise ValueError(f'The method {self.options["method"]} is not available')
-
     def get_bands(self):
         """Calculate confidence intervals for impulse response functions.
         
@@ -511,21 +454,6 @@ class ImpulseResponse:
         else:
             raise ValueError(f"Invalid const value: {const}. Must be 0, 1, 2, or 3.")
 
-    def _get_common_sample(self, df1: pd.DataFrame, df2: pd.DataFrame) -> pd.Index:
-        """Get common sample between two DataFrames.
-        
-        Args:
-            df1: First DataFrame
-            df2: Second DataFrame
-        
-        Returns:
-            pd.Index: Common sample index
-        """
-        common_sample = df1.index.intersection(df2.index)
-        df1 = df1.loc[common_sample]
-        df2 = df2.loc[common_sample]
-        return df1, df2
-
     def _align_iv_data(self) -> None:
         """Align instrument variable data with endogenous variables.
         
@@ -542,8 +470,89 @@ class ImpulseResponse:
             iv = self.results.IV.dropna()
             endo = self.results.endo.dropna()
             # Get common sample between IV and endogenous data using index intersection
-            iv, endo = self._get_common_sample(iv, endo)
+            iv, endo = GeneralUtils.get_common_sample(iv, endo)
             # Update both datasets to use only the common sample
             self.results.IV = iv
             self.results.endo = endo
 
+
+    def _get_bootstrapped_residuals(self, IV: Optional[np.ndarray] = None):
+
+        if self.options['method'] == 'bs':
+            # Standard bootstrap: randomly sample residuals with replacement
+            idx = np.random.randint(0, self.results.nobs-self.results.nlag, self.results.nobs-self.results.nlag)
+            u = self.results.fit.resid[idx]
+            return u, None
+        elif self.options['method'] == 'wild':
+            # Wild bootstrap: multiply residuals by random +1/-1
+            if self.options.get('ident') == 'iv' and IV is not None:
+                # For IV, we need to bootstrap both residuals and instrument
+                rr = 1 - 2 * (np.random.rand(self.results.IV.shape[0], self.results.IV.shape[1]) > 0.5)
+                u = self.results.fit.resid * (rr @ np.ones((self.results.IV.shape[1], self.results.nvar)))
+                z = self.results.IV * rr
+                return u, z
+            else:
+                # For Cholesky or other methods, just bootstrap residuals
+                rr = 1 - 2 * (np.random.rand(self.results.fit.resid.shape[0], 1) > 0.5)
+                u = self.results.fit.resid * (rr @ np.ones((1, self.results.nvar)))
+                return u, None
+        else:
+            raise ValueError(f'The method {self.options["method"]} is not available')
+
+
+    def _recover_residuals(self):
+        up = self.results.fit.resid.loc[:, self.options['shock_var']]     # residuals to be instrumented (1st variable)
+        uq = self.results.fit.resid.loc[:, self.results.endo.columns.drop(self.options['shock_var'])]    # residuals for second stage 
+        return up, uq
+    
+
+    def _iv_var_first_stage(self):
+        first_stage = sm.OLS(self.up, sm.add_constant(self.iv)).fit()  # add_constant=True by default
+        return first_stage
+    
+    def _iv_var_second_stage(self, first_stage):
+        up_hat = pd.DataFrame(first_stage.predict(), index=self.up.index, columns=[self.options['shock_var']])  #
+        self.__uq, up_hat = GeneralUtils.get_common_sample(self.uq, up_hat)
+        # Run second stage regression for all variables at once
+        second_stage = sm.OLS(self.__uq, sm.add_constant(up_hat)).fit()
+        
+        self.__B = pd.DataFrame(
+                    np.zeros((self.results.nvar, self.results.nvar)),
+                    index=self.results.endo.columns,
+                    columns=self.results.endo.columns
+                )
+        
+        self.__B.loc[self.options['shock_var'], self.options['shock_var']] = 1  # shock variable normalized to 1
+        
+        # Get common sample for all variables at once
+        self.__uq, up_hat = GeneralUtils.get_common_sample(self.uq, up_hat)
+
+        params = second_stage.params if isinstance(second_stage.params, pd.DataFrame) else pd.DataFrame(second_stage.params)
+        self.__B.loc[self.__uq.columns, self.options['shock_var']] = params.loc[self.options['shock_var']].values
+
+        return self.__B
+
+    
+    def _compute_scale_factor(self, B):
+        u = pd.concat([self.up, self.uq], axis=1)
+        # Calculate the variance-covariance matrix of residuals using pandas
+        self.__sigma_b = u.cov() * (len(u) / (len(u) - self.results.ntotcoeff))  # Calculate variance-covariance matrix directly
+        # Extract components following MATLAB notation for clarity
+        # s21s11 is the vector of second stage coefficients (impact responses)
+        
+        s21s11 = B.loc[self.uq.columns, self.options['shock_var']]  # Column vector
+        S11 = self.__sigma_b.loc[self.options['shock_var'], self.options['shock_var']]           # Variance of first variable residuals
+        S21 = self.__sigma_b.loc[self.uq.columns, self.options['shock_var']] # Covariance of other vars with first var
+        S22 = self.__sigma_b.loc[self.uq.columns, self.uq.columns]        # Variance-covariance of other variables
+
+        # Compute Q matrix following the formula in the paper, exactly as in MATLAB
+        # Q = s21s11*S11*s21s11'-(S21*s21s11'+s21s11*S21')+S22
+        Q = (s21s11 * S11 * s21s11.T) - (S21 @ s21s11.T + s21s11 @ S21.T) + S22
+        # Compute shock scaling factor following the formula
+        # sp = sqrt(S11-(S21-s21s11*S11)'*(Q\(S21-s21s11*S11)));
+        S21_term = S21 - s21s11 * S11
+        scale_factor = S11 - S21_term.T @ np.linalg.solve(Q, S21_term)
+        # Silently reject draws with invalid terms by returning None
+        if scale_factor <= 0 or np.isnan(scale_factor):
+            return None
+        return np.sqrt(scale_factor)
