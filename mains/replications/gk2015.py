@@ -18,7 +18,6 @@ from matplotlib import font_manager
 from colorama import init, Fore, Style
 
 from varkit.var.model import Model
-from varkit.var.options import Options
 from varkit.var.impulse_response import ImpulseResponse
 from varkit.var.plotter import VARPlotter, VARConfig
 
@@ -129,7 +128,7 @@ class Data:
             long_names.append(rev_mapping[name])
         return long_names
 
-class VARAnalysis:
+class GKVAR:
     """Class for conducting VAR analysis."""
     
     def __init__(self, config: VARConfig):
@@ -166,8 +165,55 @@ class VARAnalysis:
         
         # Create plots
         print(f"\n{Fore.CYAN}Creating comparison plots...{Style.RESET_ALL}")
-        output_path = Path('figures')
-        self.plotter.create_comparison_plot(cholesky_results, iv_results, var_names_long, output_path)
+        output_path = Path('figures/replications/')
+        self._create_comparison_plot(cholesky_results, iv_results, var_names_long, output_path)
+    
+
+    def _create_comparison_plot(self, 
+                             cholesky_results: Tuple,
+                             iv_results: Dict[str, Dict],
+                             var_names_long: List[str],
+                             output_path: Path = None) -> None:
+        """Create comparison plot between Cholesky and IV identification.
+        
+        Parameters
+        ----------
+        cholesky_results : Tuple
+            Tuple containing (INF, SUP, MED, BAR) for Cholesky identification
+        iv_results : Dict[str, Dict]
+            Dictionary containing results for each IV, with keys 'INF', 'SUP', 'MED', 'BAR'
+        var_names_long : List[str]
+            List of long variable names for plot titles
+        output_path : Path, optional
+            Path to save the plot. If None, uses './figures'
+        """
+        plt.figure(figsize=(20, 20))
+        
+        # First pass to determine y-axis limits
+        self.plotter.compute_ylims(cholesky_results, iv_results)
+        
+        # Create plots
+        for ii, var in enumerate(self.config.var_names):
+            # Cholesky subplot (left column)
+            ax1 = plt.subplot(4, 2, 2*ii + 1)
+            self.plotter.plot_cholesky_subplot(cholesky_results, var, var_names_long[ii], ax1)
+            
+            # IV subplot (right column)
+            ax2 = plt.subplot(4, 2, 2*ii + 2)
+            self.plotter.plot_iv_subplot(iv_results, var, var_names_long[ii], ax2)
+            
+            # Set same y-axis limits for both plots
+            ax1.set_ylim(self.plotter.ylims[var])
+            ax2.set_ylim(self.plotter.ylims[var])
+            
+            # Add x-label only for bottom plots
+            if ii == len(self.config.var_names) - 1:
+                ax1.set_xlabel('Months')
+                ax2.set_xlabel('Months')
+        
+        plt.tight_layout()
+        self.plotter.save_plot('gk2015.pdf', output_path)
+
     
     def _estimate_var(self) -> Model:
         """Estimate VAR model."""
@@ -279,7 +325,7 @@ def main():
     config = VARConfig.default_config()
     
     # Run analysis
-    analysis = VARAnalysis(config)
+    analysis = GKVAR(config)
     analysis.run_analysis()
 
 if __name__ == '__main__':

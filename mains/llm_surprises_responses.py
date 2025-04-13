@@ -68,8 +68,9 @@ class Data:
         df_macro['ip'] = np.log(df_macro['indpro'])
         df_macro['logcpi'] = np.log(df_macro['cpilfesl'])
         df_macro['logip'] = np.log(df_macro['indpro'])
-        df_macro['gs1'] = df_macro['dgs1']
-        df_macro = df_macro.drop(columns=['cpilfesl', 'indpro'])
+        df_macro['gs1'] = df_macro['dgs1'].div(100)
+        df_macro['loggdp'] = np.log(df_macro['gdp_real'])
+        df_macro = df_macro.drop(columns=['cpilfesl', 'indpro', 'gdp_real'])
         df_macro = df_macro[var_names]
         df_macro.index = df_macro.index.to_period('M').to_timestamp('M')
         df_macro = df_macro.dropna()  # Drop any rows with NaN in macro data
@@ -152,14 +153,16 @@ class Data:
         print(f"Non-NaN instruments start at: {non_nan_iv.index.min()} ({len(non_nan_iv)} observations)")
         
         # Get variable names
-        vnames_long = [
-            "Federal Funds Rate",
-            "Consumer Price Index (log)",
-            "Industrial Production (log)",
-            "Excess Bond Premium"
-        ]
+        name_mapping = {
+            "gs1": "1-year yield",
+            "fedfunds": "Federal Funds Rate",
+            "logcpi": "Consumer Price Index (log)",
+            "logip": "Industrial Production (log)",
+            "loggdp": "GDP (log)",
+            "ebp": "Excess Bond Premium"
+        }
         vnames_short = var_names
-        name_mapping = dict(zip(vnames_long, vnames_short))
+        vnames_long = [name_mapping[name] for name in vnames_short]
         
         return cls(
             endo=macro_final,
@@ -172,9 +175,8 @@ class Data:
     def get_long_names(self, short_names: List[str]) -> List[str]:
         """Get long names corresponding to given short names."""
         long_names = []
-        rev_mapping = {v: k for k, v in self.name_mapping.items()}
         for name in short_names:
-            long_names.append(rev_mapping[name])
+            long_names.append(self.name_mapping[name])
         return long_names
 
 
@@ -218,6 +220,8 @@ class VARAnalysis:
         # Estimate VAR
         print(f"\n{Fore.CYAN}Estimating VAR model...{Style.RESET_ALL}")
         var_model = self._estimate_var()
+        print(var_model.results.max_eig)
+
         # Compute Cholesky identification
         print(f"\n{Fore.CYAN}Estimating Cholesky IRFs and error bands...{Style.RESET_ALL}")
         cholesky_results = self._compute_cholesky_identification(var_model)
@@ -424,7 +428,7 @@ class VARConfig:
     def default_config(cls) -> 'VARConfig':
         """Create default configuration for LLM Surprises analysis."""
         return cls(
-            var_names=['gs1', 'logcpi', 'logip', 'ebp'],  # Order matters for Cholesky
+            var_names=['gs1', 'logcpi', 'logip', 'loggdp', 'ebp'],  # Order matters for Cholesky
             shock_var='gs1',
             iv_names=['ss', 'ff4'],  # Two instruments to compare
             nlags=12,  # Monthly data, 1 year of lags

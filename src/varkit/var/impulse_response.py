@@ -14,8 +14,6 @@ import pandas as pd
 import statsmodels.api as sm
 
 from .model import Model, Output
-from ..auxiliary import ols
-from ..utils import common_sample
 from ..utils.var import VARUtils
 # Estimate VAR on bootstrapped data
 from .model import Model
@@ -82,7 +80,7 @@ class ImpulseResponse:
                 first_stage = sm.OLS(up, sm.add_constant(iv)).fit()  # add_constant=True by default
                 up_hat = pd.DataFrame(first_stage.predict(), index=up.index, columns=[self.options['shock_var']])  # Use statsmodels to get fitted values
                 self.results.first_stage = first_stage 
-                
+
                 # Step 4: Second stage regressions to get impact responses
                 B = pd.DataFrame(
                     np.zeros((self.results.nvar, self.results.nvar)),
@@ -98,8 +96,11 @@ class ImpulseResponse:
                 second_stage = sm.OLS(uq, sm.add_constant(up_hat)).fit()
 
                 
-                # Store coefficients directly in B matrix (skipping constant)
-                B.loc[uq.columns, self.options['shock_var']] = second_stage.params.loc[self.options['shock_var'],:].values.flatten()
+                # Convert to DataFrame if it's a Series to handle both cases uniformly
+                params = second_stage.params if isinstance(second_stage.params, pd.DataFrame) else pd.DataFrame(second_stage.params)
+
+                # Now we can safely use DataFrame indexing
+                B.loc[uq.columns, self.options['shock_var']] = params.loc[self.options['shock_var']].values
 
                 # Step 5: Calculate shock size scaling factor
                 # Update size of the shock following function 4 of Gertler and Karadi (2015)

@@ -33,6 +33,6 @@ mypy = "^1.8.0"
 pytest-cov = "^4.1.0"
 
 [tool.poetry.scripts]
-gk2015 = "mains.gk2015_replication:main"
+gk2015 = "mains.replications.gk2015:main"
 llm_surprises = "mains.llm_surprises_responses:main"
 build_macro_dataset = "mains.build_macro_dataset:main"

@@ -5,7 +5,6 @@ This module contains utility functions ported from MATLAB's VAR-Toolbox Utils di
 as well as additional utilities for handling macroeconomic data.
 """
 
-from .common_sample import common_sample
 from .data_loaders import (
     FredDataLoader,
     EBPDataLoader,
@@ -17,7 +16,6 @@ from .data_loaders import (
 from .macro_dataset import MacroDatasetBuilder
 
 __all__ = [
-    'common_sample',
     'FredDataLoader',
     'EBPDataLoader',
     'CommodityPriceLoader',

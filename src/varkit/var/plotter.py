@@ -65,52 +65,9 @@ class VARPlotter:
         self.config = config
         self.ylims = {}  # Store y-axis limits for each variable
         
-    def create_comparison_plot(self, 
-                             cholesky_results: Tuple,
-                             iv_results: Dict[str, Dict],
-                             var_names_long: List[str],
-                             output_path: Path = None) -> None:
-        """Create comparison plot between Cholesky and IV identification.
-        
-        Parameters
-        ----------
-        cholesky_results : Tuple
-            Tuple containing (INF, SUP, MED, BAR) for Cholesky identification
-        iv_results : Dict[str, Dict]
-            Dictionary containing results for each IV, with keys 'INF', 'SUP', 'MED', 'BAR'
-        var_names_long : List[str]
-            List of long variable names for plot titles
-        output_path : Path, optional
-            Path to save the plot. If None, uses './figures'
-        """
-        plt.figure(figsize=(20, 20))
-        
-        # First pass to determine y-axis limits
-        self._compute_ylims(cholesky_results, iv_results)
-        
-        # Create plots
-        for ii, var in enumerate(self.config.var_names):
-            # Cholesky subplot (left column)
-            ax1 = plt.subplot(4, 2, 2*ii + 1)
-            self._plot_cholesky_subplot(cholesky_results, var, var_names_long[ii], ax1)
-            
-            # IV subplot (right column)
-            ax2 = plt.subplot(4, 2, 2*ii + 2)
-            self._plot_iv_subplot(iv_results, var, var_names_long[ii], ax2)
-            
-            # Set same y-axis limits for both plots
-            ax1.set_ylim(self.ylims[var])
-            ax2.set_ylim(self.ylims[var])
-            
-            # Add x-label only for bottom plots
-            if ii == len(self.config.var_names) - 1:
-                ax1.set_xlabel('Months')
-                ax2.set_xlabel('Months')
-        
-        plt.tight_layout()
-        self._save_plot('irf_gk2015.pdf', output_path)
     
-    def _compute_ylims(self, cholesky_results, iv_results):
+    
+    def compute_ylims(self, cholesky_results, iv_results):
         """Compute common y-axis limits for each variable."""
         INF, SUP, MED, BAR = cholesky_results
         
@@ -143,7 +100,7 @@ class VARPlotter:
         ax.set_title(title, fontsize=16, pad=10)
         ax.tick_params(axis='both', which='major', labelsize=12)
     
-    def _plot_cholesky_subplot(self, cholesky_results, var: str, title: str, ax) -> None:
+    def plot_cholesky_subplot(self, cholesky_results, var: str, title: str, ax) -> None:
         """Plot Cholesky identification subplot."""
         INF, SUP, MED, BAR = cholesky_results
         # Plot median response
@@ -169,7 +126,7 @@ class VARPlotter:
         self._setup_axis(ax, title)
         ax.legend()
     
-    def _plot_iv_subplot(self, iv_results: Dict, var: str, title: str, ax) -> None:
+    def plot_iv_subplot(self, iv_results: Dict, var: str, title: str, ax) -> None:
         """Plot IV identification subplot."""
         colors = ['k', 'b', 'g']
         
@@ -218,7 +175,7 @@ class VARPlotter:
         self._setup_axis(ax, title)
         ax.legend()
     
-    def _save_plot(self, filename: str, output_path: Path = None) -> None:
+    def save_plot(self, filename: str, output_path: Path = None) -> None:
         """Save plot to file."""
         if output_path is None:
             output_path = Path('figures')
