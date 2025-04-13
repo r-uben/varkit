@@ -20,7 +20,7 @@ from colorama import init, Fore, Style
 from varkit.var.model import Model
 from varkit.var.impulse_response import ImpulseResponse
 from varkit.var.plotter import VARPlotter, VARConfig
-
+from varkit.utils.general import GeneralUtils
 # Initialize colorama for colored console output
 init(autoreset=True)
 
@@ -44,11 +44,6 @@ plt.rcParams.update({
     'mathtext.bf': 'Latin Modern Roman:bold'
 })
 
-def parse_date(date_str: str) -> pd.Timestamp:
-    """Parse date string in YYYYmM format."""
-    year = int(date_str[:4])
-    month = int(date_str[5:])  # Skip the 'm'
-    return pd.Timestamp(year=year, month=month, day=1)
 
 @dataclass
 class Data:
@@ -88,7 +83,7 @@ class Data:
         
         # Load and process data
         df = pd.read_excel(data_path, skiprows=2)
-        dates = df.iloc[:, 0].apply(parse_date)
+        dates = df.iloc[:, 0].apply(GeneralUtils.parse_date)
         df = df.iloc[:, 1:]
         df.index = pd.DatetimeIndex(dates, freq='MS')
         df.columns = vnames_short
